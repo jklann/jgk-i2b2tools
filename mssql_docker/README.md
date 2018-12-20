@@ -5,8 +5,8 @@ Deploy the [i2b2 Docker images](https://github.com/waghsk/i2b2-quickstart/wiki/D
 
 ```
 docker network create i2b2-net
-docker run -d  -p 5432:5432 --net i2b2-net --name i2b2-pg  i2b2/i2b2-pg:latest
-docker run -d -e DS_IP='i2b2-pg' -p8080:8080 --net i2b2-net --name i2b2-wildfly i2b2/i2b2-wildfly:multi_fact_table
+docker run -d  -p 5432:5432 --net i2b2-net --name i2b2-pg  i2b2/i2b2-pg:multi_fact_table
+docker run -d -e DS_IP='i2b2-pg' -p8080:8080 --net i2b2-net --name i2b2-wildfly i2b2/i2b2-wildfly:latest
 export IP=[PUBLIC_IP]
 sudo docker exec -it i2b2-pg bash -c "export PUBLIC_IP=$IP;sh update_pm_cell_data.sh; "
 ```
