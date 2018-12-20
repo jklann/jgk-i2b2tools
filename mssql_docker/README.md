@@ -23,11 +23,11 @@ Edit ``i2b2_config_data.js`` to use localhost:8080
 You might also find you need to change the port definition in the local pgsql db. Connect with your favorite Postgres client and execute:
 
 ```
-UPDATE "i2b2pm"."pm_cell_data" SET "url"='http://localhost:8080/i2b2/services/QueryToolService/' WHERE "cell_id"='CRC' AND "project_path"='/'
-UPDATE "i2b2pm"."pm_cell_data" SET "url"='http://localhost:8080/i2b2/services/FRService/' WHERE "cell_id"='FRC' AND "project_path"='/'
-UPDATE "i2b2pm"."pm_cell_data" SET "url"='http://localhost:8080/i2b2/services/OntologyService/' WHERE "cell_id"='ONT' AND "project_path"='/' 
-UPDATE "i2b2pm"."pm_cell_data" SET "url"='http://localhost:8080/i2b2/services/WorkplaceService/' WHERE "cell_id"='WORK' AND "project_path"='/'
-UPDATE "i2b2pm"."pm_cell_data" SET "url"='http://localhost:8080/i2b2/services/IMService/' WHERE "cell_id"='IM' AND "project_path"='/'
+UPDATE "i2b2pm"."pm_cell_data" SET "url"='http://localhost:8080/i2b2/services/QueryToolService/' WHERE "cell_id"='CRC' AND "project_path"='/';
+UPDATE "i2b2pm"."pm_cell_data" SET "url"='http://localhost:8080/i2b2/services/FRService/' WHERE "cell_id"='FRC' AND "project_path"='/';
+UPDATE "i2b2pm"."pm_cell_data" SET "url"='http://localhost:8080/i2b2/services/OntologyService/' WHERE "cell_id"='ONT' AND "project_path"='/';
+UPDATE "i2b2pm"."pm_cell_data" SET "url"='http://localhost:8080/i2b2/services/WorkplaceService/' WHERE "cell_id"='WORK' AND "project_path"='/';
+UPDATE "i2b2pm"."pm_cell_data" SET "url"='http://localhost:8080/i2b2/services/IMService/' WHERE "cell_id"='IM' AND "project_path"='/';
 ```
 
 ## Step 2
