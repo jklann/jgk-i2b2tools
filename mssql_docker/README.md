@@ -5,8 +5,8 @@ Deploy the [i2b2 Docker images](https://github.com/waghsk/i2b2-quickstart/wiki/D
 
 ```
 docker network create i2b2-net
-docker run -d  -p 5432:5432 --net i2b2-net --name i2b2-pg  i2b2/i2b2-pg:latest
-docker run -d -e DS_IP='i2b2-pg' -p8080:8080 --net i2b2-net --name i2b2-wildfly i2b2/i2b2-wildfly:multi_fact_table
+docker run -d  -p 5432:5432 --net i2b2-net --name i2b2-pg  i2b2/i2b2-pg:multi_fact_table
+docker run -d -e DS_IP='i2b2-pg' -p8080:8080 --net i2b2-net --name i2b2-wildfly i2b2/i2b2-wildfly:latest
 export IP=[PUBLIC_IP]
 sudo docker exec -it i2b2-pg bash -c "export PUBLIC_IP=$IP;sh update_pm_cell_data.sh; "
 ```
@@ -23,11 +23,11 @@ Edit ``i2b2_config_data.js`` to use localhost:8080
 You might also find you need to change the port definition in the local pgsql db. Connect with your favorite Postgres client and execute:
 
 ```
-UPDATE "i2b2pm"."pm_cell_data" SET "url"='http://localhost:8080/i2b2/services/QueryToolService/' WHERE "cell_id"='CRC' AND "project_path"='/'
-UPDATE "i2b2pm"."pm_cell_data" SET "url"='http://localhost:8080/i2b2/services/FRService/' WHERE "cell_id"='FRC' AND "project_path"='/'
-UPDATE "i2b2pm"."pm_cell_data" SET "url"='http://localhost:8080/i2b2/services/OntologyService/' WHERE "cell_id"='ONT' AND "project_path"='/' 
-UPDATE "i2b2pm"."pm_cell_data" SET "url"='http://localhost:8080/i2b2/services/WorkplaceService/' WHERE "cell_id"='WORK' AND "project_path"='/'
-UPDATE "i2b2pm"."pm_cell_data" SET "url"='http://localhost:8080/i2b2/services/IMService/' WHERE "cell_id"='IM' AND "project_path"='/'
+UPDATE "i2b2pm"."pm_cell_data" SET "url"='http://localhost:8080/i2b2/services/QueryToolService/' WHERE "cell_id"='CRC' AND "project_path"='/';
+UPDATE "i2b2pm"."pm_cell_data" SET "url"='http://localhost:8080/i2b2/services/FRService/' WHERE "cell_id"='FRC' AND "project_path"='/';
+UPDATE "i2b2pm"."pm_cell_data" SET "url"='http://localhost:8080/i2b2/services/OntologyService/' WHERE "cell_id"='ONT' AND "project_path"='/';
+UPDATE "i2b2pm"."pm_cell_data" SET "url"='http://localhost:8080/i2b2/services/WorkplaceService/' WHERE "cell_id"='WORK' AND "project_path"='/';
+UPDATE "i2b2pm"."pm_cell_data" SET "url"='http://localhost:8080/i2b2/services/IMService/' WHERE "cell_id"='IM' AND "project_path"='/';
 ```
 
 ## Step 2
