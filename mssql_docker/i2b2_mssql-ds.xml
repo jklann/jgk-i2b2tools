@@ -4,7 +4,7 @@
 		pool-name="MSSQLDS" enabled="true" use-ccm="false">
 		<connection-url>jdbc:sqlserver://mssql:1433</connection-url>
 		<driver-class>com.microsoft.sqlserver.jdbc.SQLServerDriver</driver-class>
-		<driver>mssql-jdbc-6.2.2.jre8.jar</driver>
+		<driver>mssql-jdbc-7.0.0.jre8.jar</driver>
 		<security>
 			<user-name>i2b2</user-name>
 			<password>i2b2r0cks!</password>

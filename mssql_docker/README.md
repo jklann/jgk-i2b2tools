@@ -64,9 +64,11 @@ Now install the i2b2 CRC, metadata, and workdata according to the [i2b2 document
 ## Step 3
 Connect i2b2 to MSSQL:
 
-a. Add the metadata for the project by running [create\_project\_pgsql](create_project_pgsql.sql) from a Postgres client.
+a. Download the Microsoft SQL JDBC Driver and put the jar in the same directory as cp2docker.sh: [mssql-jdbc-7.0.0.jre8.jar](https://www.microsoft.com/en-us/download/details.aspx?id=57175)
 
-b. Add the datasource to wildfly by running [cp2docker](cp2docker.sh) from the command line. 
+b. Add the metadata for the project by running [create\_project\_pgsql](create_project_pgsql.sql) from a Postgres client.
+
+c. Add the datasource to wildfly by running [cp2docker](cp2docker.sh) from the command line. 
 
 ## Backup and restore
 
