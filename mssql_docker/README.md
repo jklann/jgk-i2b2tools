@@ -72,7 +72,18 @@ b. Add the datasource to wildfly by running [cp2docker](cp2docker.sh) from the c
 
 You can [back up your MSSQL volume](https://docs.docker.com/storage/volumes) to make it easy to restore later if your Docker installation gets destroyed. For example:
 
-Backup:
+Backup the whole volume:
 ```
 docker run --rm --volumes-from mssql -v ~:/backup ubuntu tar czvf /backup/mssql_backup.tgz /var/opt/mssql
+```
+
+Use MSSQL commands to back up just the dbo database:
+
+1. Run this from MSSQL, logged in as SA:
+``BACKUP DATABASE [dbo] TO DISK = N'/var/opt/mssql/data/dbo.bak' WITH NOFORMAT, NOINIT, NAME = 'dbo-full', SKIP, NOREWIND, NOUNLOAD, STATS = 10``
+2. Run this from the command line:
+
+```
+docker run --rm --volumes-from mssql -v ~:/backup ubuntu tar czvf /backup/mssql_backup_file.tgz /var/opt/mssql/data/dbo.bak
+docker run --rm -v ~:/backup ubuntu rm /backup/mssql_backup_file.tgz 
 ```
