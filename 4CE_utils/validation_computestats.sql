@@ -26,7 +26,7 @@ update c
 		) s on c.patient_num = s.patient_num
 
 -- 5) Compute counts
---    Put sensitivity & specificity & ppv & npv into the spreadsheet at 
+--    Put sensitivity & specificity & ppv & npv into the spreadsheet at https://docs.google.com/spreadsheets/d/1Qd3XNz1hjRy9SRt0K7guIAUDFRAmA7A2TC0vd3nsU9g/edit?usp=sharing
 --    You are also encourage to include the 2x2 table if that doesn't violate your local policies (because the counts are not obfuscated)
 select (test_outcome+0.0)/(test_outcome+outcome_only) sensitivity, (neither+0.0)/(test_only+neither) specificity, (test_outcome+0.0)/(test_outcome+test_only) ppv, (neither+0.0)/(neither+outcome_only) npv, z.* from
 (select sum(icudeath*severe) test_outcome, sum(icudeath)-sum(icudeath*severe) outcome_only, sum(severe)-sum(icudeath*severe) test_only, sum(case when icudeath=0 and severe=0 then 1 else 0 end) neither from
