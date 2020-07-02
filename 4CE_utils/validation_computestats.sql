@@ -105,3 +105,12 @@ UNION ALL
    (select count(*) tot from #severe_by_cat) z on 2=2
  GO
  
+-- 8) NO NEED TO DO THIS PRESENTLY. Optional: export data for R code 
+-- Export this as labels.csv
+select patient_num, admission_date hospitalization_date, case when death_date is not null or icu=1 then 'Y' else 'N' end label  from covid_cohort_validation
+-- Export this as facts.csv
+select f.patient_num, f.concept_cd phenx,start_date,cat  from observation_fact f 
+   inner join covid_cohort_validation c on f.patient_num = c.patient_num and f.start_date >= c.admission_date
+   inner join covid_cohort_severe_codes s on s.concept_cd=f.concept_cd
+
+
