@@ -5,7 +5,7 @@
 #### BETA VERSION - SITES ARE NOT EXPECTED TO RUN THIS PRESENTLY
 
 # Set your directory!
-dir <- "/Users/jeffklann/HMS/Projects/COVID/griffin_results/validation_work/hossein/"
+dir <- "/Users/jeffklann/HMS/Projects/COVID/4CE/severity_validation/R/"
 
 # Setup
 Sys.setenv(R_MAX_NUM_DLLS = 999)
@@ -18,6 +18,7 @@ options(java.parameters = "-Xmx8048m")
 
 ####  Install and load the required packages
 if (!require("easypackages")) install.packages('easypackages', repos = "http://cran.rstudio.com/")
+if (!require("ggthemes")) install.packages('ggthemes', repos = "http://cran.rstudio.com/")
 if (!require("scales")) install.packages('scales', repos = "http://cran.rstudio.com/")
 if (!require("reshape2")) install.packages('reshape2', repos = "http://cran.rstudio.com/")
 if (!require("foreach")) install.packages('foreach', repos = "http://cran.rstudio.com/")
@@ -156,6 +157,54 @@ labeldt <- dplyr::select(dems,patient_num,label)
 
     write.csv(ROC,file = paste(dir,"ROC.csv",sep=''))
     write.csv(coefficients,file = paste(dir,"coeffs.csv",sep=''))
+    
+    ############# PLOT
+    ###plotting the coefficients
+    coefficients$features <- as.character(coefficients$features)
+    
+    coefficients$features <- sub('`\\`', '', coefficients$features, fixed = TRUE)
+    coefficients$features <- sub('\\``', '', coefficients$features, fixed = TRUE)
+    coefficients$value <- exp(coefficients$value*2) ##OR if exp 
+    
+    
+    #for merging readable coefficient names
+    # coefficients <- merge(coefficients,severcode,by.x="features",by.y = "concept_cd",all.x = TRUE)
+    # coefficients <- subset(coefficients,!(!(coefficients$c_name %in% c("sex_cd","white","black","hispanic"))
+    #                                       & coefficients$value <= 1))
+    
+    
+    
+    #c_name is the column name for plotting that has actual feature names
+
+    # change features to c_name to use friendly name
+    (pl00 <-ggplot(coefficients,aes(x=reorder(features,abs(value)),y=value))+
+        geom_point(size=3,alpha=0.9,shape=15)+
+        geom_hline(aes(yintercept=1))+
+        coord_flip()+
+        ggthemes::theme_fivethirtyeight()+
+        theme(
+          # axis.text.x=element_blank(),
+          # axis.ticks.x=element_blank(),
+          panel.grid.major.y = element_line(color = "gray",size=0.1),
+          # panel.grid.minor.y = element_line(),
+          plot.background = element_rect(fill = "white"),
+          # legend.position="bottom",
+          axis.title = element_text(),
+          axis.text = element_text(size=10),
+          # panel.background = element_rect(color = "gray"),
+          strip.text = element_text(face="bold"),
+          strip.text.x = element_text(face="bold"),
+          strip.text.y = element_text(face="bold")#,
+          # strip.background = element_rect(colour="black", fill="NA")
+        )+ 
+        labs(x="",y= "odds ratio",
+             title="important risk factors for death/icu after COVID-19 hospitalization",
+             caption = ""))
+    
+    
+    
+    ggsave(filename=paste0(paste(dir,"riskfactors.png",sep='')), pl00, dpi = 300, width = 8, height = 6)
+    write.csv(coefficients,file=paste0(paste(dir,"risk_factors.csv",sep='')))
     
 
 
