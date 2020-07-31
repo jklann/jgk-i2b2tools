@@ -100,6 +100,9 @@ select f.patient_num, min(start_date) start_date,cat,c_domain into #severe_by_ca
    inner join covid_cohort_severe_codes s on s.concept_cd=f.concept_cd
    group by f.patient_num,cat,c_domain
 GO
+
+(select count(distinct patient_num) tot from #severe_by_cat)
+
 -- Prevalence of outcomes 
 select cat, prevalence from 
 (select sum(0.0+icu*severe)/sum(severe) icu,sum(0.0+severe*death)/sum(severe) dead from 
@@ -109,7 +112,7 @@ select cat, prevalence from
 UNION ALL
  select cat, (0.0+cnt)/tot prevalence from (select cat, count(distinct patient_num) cnt from #severe_by_cat group by cat) x 
    full outer join 
-   (select count(*) tot from #severe_by_cat) z on 2=2
+   (select count(distinct patient_num) tot from #severe_by_cat) z on 2=2
  GO
   
 -- 7.5) Optional: Submit counts for Venn diagram 
