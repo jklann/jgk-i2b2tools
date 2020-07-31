@@ -84,14 +84,27 @@ update c
 		) s on c.patient_num = s.patient_num
 GO 
 
--- 6) Compute counts
+-- 6) Compute statistics (now includes ICU OR DEATH as well as ICU, DEATH separately)
 --    Put sensitivity & specificity & ppv & npv into the spreadsheet at https://docs.google.com/spreadsheets/d/1Qd3XNz1hjRy9SRt0K7guIAUDFRAmA7A2TC0vd3nsU9g/edit?usp=sharing
 --    You are also encourage to include the 2x2 table if that doesn't violate your local policies (because the counts are not obfuscated)
-select (test_outcome+0.0)/(test_outcome+outcome_only) sensitivity, (neither+0.0)/(test_only+neither) specificity, (test_outcome+0.0)/(test_outcome+test_only) ppv, (neither+0.0)/(neither+outcome_only) npv, z.* from
+--- ICU OR DEATH
+select 'ICU|DEATH' as outcome, (test_outcome+0.0)/(test_outcome+outcome_only) sensitivity, (neither+0.0)/(test_only+neither) specificity, (test_outcome+0.0)/(test_outcome+test_only) ppv, (neither+0.0)/(neither+outcome_only) npv, z.* from
 (select sum(icudeath*severe) test_outcome, sum(icudeath)-sum(icudeath*severe) outcome_only, sum(severe)-sum(icudeath*severe) test_only, sum(case when icudeath=0 and severe=0 then 1 else 0 end) neither from
 (select *, case when icu=1 or death=1 then 1 else 0 end icudeath from 
 (select patient_num, icu, case when death_date is not null then 1 else 0 end death, severe from covid_cohort_validation v) x ) y) z
- 
+UNION ALL
+-- ICU
+select 'ICU' as outcome, (test_outcome+0.0)/(test_outcome+outcome_only) sensitivity, (neither+0.0)/(test_only+neither) specificity, (test_outcome+0.0)/(test_outcome+test_only) ppv, (neither+0.0)/(neither+outcome_only) npv, z.* from
+(select sum(icudeath*severe) test_outcome, sum(icudeath)-sum(icudeath*severe) outcome_only, sum(severe)-sum(icudeath*severe) test_only, sum(case when icudeath=0 and severe=0 then 1 else 0 end) neither from
+(select *, case when icu=1 then 1 else 0 end icudeath from 
+(select patient_num, icu, case when death_date is not null then 1 else 0 end death, severe from covid_cohort_validation v) x ) y) z
+UNION ALL
+ -- Death
+select 'DEATH' as outcome, (test_outcome+0.0)/(test_outcome+outcome_only) sensitivity, (neither+0.0)/(test_only+neither) specificity, (test_outcome+0.0)/(test_outcome+test_only) ppv, (neither+0.0)/(neither+outcome_only) npv, z.* from
+(select sum(icudeath*severe) test_outcome, sum(icudeath)-sum(icudeath*severe) outcome_only, sum(severe)-sum(icudeath*severe) test_only, sum(case when icudeath=0 and severe=0 then 1 else 0 end) neither from
+(select *, case when death=1 then 1 else 0 end icudeath from 
+(select patient_num, icu, case when death_date is not null then 1 else 0 end death, severe from covid_cohort_validation v) x ) y) z
+
 -- 7) Compute prevalence of the severe measure categories and the outcomes (icu and death) among those flagged severe 
 -- 7/21/20 - now also computes overlap (i.e. Venn diagram)
 -- Please also copy these percentages into the above spreadsheet
@@ -100,9 +113,6 @@ select f.patient_num, min(start_date) start_date,cat,c_domain into #severe_by_ca
    inner join covid_cohort_severe_codes s on s.concept_cd=f.concept_cd
    group by f.patient_num,cat,c_domain
 GO
-
-(select count(distinct patient_num) tot from #severe_by_cat)
-
 -- Prevalence of outcomes 
 select cat, prevalence from 
 (select sum(0.0+icu*severe)/sum(severe) icu,sum(0.0+severe*death)/sum(severe) dead from 
@@ -137,5 +147,3 @@ select patient_num, admission_date hospitalization_date, case when death_date is
 select f.patient_num, cat phenx,start_date,f.concept_cd  from observation_fact f 
    inner join covid_cohort_validation c on f.patient_num = c.patient_num and f.start_date >= c.admission_date
    inner join covid_cohort_severe_codes s on s.concept_cd=f.concept_cd
-
-
