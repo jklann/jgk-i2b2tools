@@ -58,12 +58,22 @@ GO
 
 --  4) Create a table holding your patient's ICU status. I created a simple one called covid_cohort_icu with patient_num, icu_admit_date, icu_discharge_date for all ICU stays.
 --    Mine is restricted to the covid cohort, but this is not a requirement for this script - the join in the next step will take care of it.
---    Example for sites using ACT's Critical Care concept to represent ICU stays: 
---    MODIFY THIS FOR YOUR SITE!
+--    The two examples below use a derived fact or CPT codes, respectively.
+--    *** MODIFY THIS FOR YOUR SITE! ***
+
+ -- This version works with the ACT Critical Care derived fact for ICU stays
  select c.patient_num, start_date as icu_admit_date, end_date as icu_discharge_date into covid_cohort_icu 
   from covid_cohort_validation c inner join observation_fact f  
    on c.patient_num=f.patient_num and f.start_date>=c.admission_date
    where concept_cd = 'UMLS:C1547136'
+
+ -- This version uses CPT codes 99291 and 99292, drawing local mappings from the act_covid ontology.
+ -- Use the CPT approach if your site does not have more accurate data from the EHR.
+ select c.patient_num, start_date as icu_admit_date, end_date as icu_discharge_date into covid_cohort_icu
+  from covid_cohort_validation c inner join observation_fact f  
+   on c.patient_num=f.patient_num and f.start_date>=c.admission_date
+   where concept_cd in 
+     (select c_basecode from act_covid where C_FULLNAME like '%\CPT4_99291\%' or c_fullname like '%\CPT4_99292\%')
 
 --  5) Add an ICU column to the table and get ICU status from the ICU table in step 3.
 --    If your ICU table is different than mine, you will need to alter the logic in the inner join (see below).
