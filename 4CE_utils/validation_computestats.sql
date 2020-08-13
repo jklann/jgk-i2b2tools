@@ -68,12 +68,14 @@ GO
    where concept_cd = 'UMLS:C1547136'
 
  -- This version uses CPT codes 99291 and 99292, drawing local mappings from the act_covid ontology.
+ -- Use 99233 (or uncomment the last line to use the ACT ontology) if you choose - this code is also used in ICU settings but is not specific to ICU. 
+ --   At MGB, the results looked most like the derived fact using only 99291 and 99292.
  -- Use the CPT approach if your site does not have more accurate data from the EHR.
  select c.patient_num, start_date as icu_admit_date, end_date as icu_discharge_date into covid_cohort_icu
   from covid_cohort_validation c inner join observation_fact f  
    on c.patient_num=f.patient_num and f.start_date>=c.admission_date
    where concept_cd in 
-     (select c_basecode from act_covid where C_FULLNAME like '%\CPT4_99291\%' or c_fullname like '%\CPT4_99292\%')
+     (select c_basecode from act_covid where C_FULLNAME like '%\CPT4_99291\%' or c_fullname like '%\CPT4_99292\%' )--or c_fullname like '%\SETTING_INPATIENT\A23576533\A23577341\A21042835\%')
 
 --  5) Add an ICU column to the table and get ICU status from the ICU table in step 3.
 --    If your ICU table is different than mine, you will need to alter the logic in the inner join (see below).
@@ -81,7 +83,7 @@ alter table covid_cohort_validation add icu int,icu_date date
 GO
 update c
 	set c.icu = 0
-	from covid_cohort_validation c where c.icu is null
+	from covid_cohort_validation c --where c.icu is null
 GO
 update c
 	set c.icu = 1, c.icu_date = s.icu_date
@@ -116,25 +118,47 @@ select 'DEATH' as outcome, (test_outcome+0.0)/(test_outcome+outcome_only) sensit
 (select patient_num, icu, case when death_date is not null then 1 else 0 end death, severe from covid_cohort_validation v) x ) y) z
 
 -- 7) Compute prevalence of the severe measure categories and the outcomes (icu and death) among those flagged severe 
--- 7/21/20 - now also computes overlap (i.e. Venn diagram)
+-- 8/13/20 - Now computes SENSITIVITY instead of prevalence, and does so compared to each and neither outcome (ICU/death)
 -- Please also copy these percentages into the above spreadsheet
-select f.patient_num, min(start_date) start_date,cat,c_domain into #severe_by_cat from observation_fact f 
+select f.patient_num, min(start_date) start_date,cat,c_domain, icu, case when death_date is not null then 1 else 0 end death
+  into #severe_by_cat from observation_fact f 
    inner join covid_cohort_validation c on f.patient_num = c.patient_num and f.start_date >= c.admission_date
    inner join covid_cohort_severe_codes s on s.concept_cd=f.concept_cd
-   group by f.patient_num,cat,c_domain
+   group by f.patient_num,cat,c_domain,icu,death_date
 GO
--- Prevalence of outcomes 
-select cat, prevalence from 
+-- PPV of outcomes - count(ICU & severe)/count(severe) and count(dead & severe)/count(severe)
+select 'ppv_'+cat, prevalence statistic from 
 (select sum(0.0+icu*severe)/sum(severe) icu,sum(0.0+severe*death)/sum(severe) dead from 
 (select patient_num, icu, case when death_date is not null then 1 else 0 end death, severe from covid_cohort_validation v) x ) y
  UNPIVOT (prevalence for cat in (icu,dead)) u
--- Prevalence of codes
 UNION ALL
- select cat, (0.0+cnt)/tot prevalence from (select cat, count(distinct patient_num) cnt from #severe_by_cat group by cat) x 
+-- Sensitivity of outcomes - count(ICU & severe)/count(all) and count(dead & severe)/count(all)
+select 'sens_'+cat, prevalence sensitivity from 
+(select sum(0.0+icu*severe)/sum(icu) icu,sum(0.0+severe*death)/sum(death) dead from 
+(select patient_num, icu, case when death_date is not null then 1 else 0 end death, severe from covid_cohort_validation v) x ) y
+ UNPIVOT (prevalence for cat in (icu,dead)) u
+-- Prevalence of codes among patients with neither ICU nor death - count(severe and NEITHER ICU NOR DEATH)/count(NEITHER ICU NOR DEATH)
+UNION ALL
+ select 'sens_none_'+cat, (0.0+cnt)/tot sensitivity from (select cat, count(distinct patient_num) cnt from #severe_by_cat where icu=0 and death=0 group by cat) x 
    full outer join 
-   (select count(distinct patient_num) tot from #severe_by_cat) z on 2=2
+   (select count(distinct patient_num) tot from covid_cohort_validation where icu=0 and death_date is null) z on 2=2 
+-- Prevalence of codes among ICU patients
+UNION ALL
+ select 'sens_icu_'+cat, (0.0+cnt)/tot sensitivity from (select cat, count(distinct patient_num) cnt from #severe_by_cat where icu=1 group by cat) x 
+   full outer join 
+   (select count(distinct patient_num) tot from covid_cohort_validation where icu=1) z on 2=2
+-- Prevalence of codes among deceased patients
+UNION ALL
+ select 'sens_death_'+cat, (0.0+cnt)/tot sensitivity from (select cat, count(distinct patient_num) cnt from #severe_by_cat where death=1 group by cat) x 
+   full outer join 
+   (select count(distinct patient_num) tot from covid_cohort_validation where death_date is not null) z on 2=2
+-- Prevalence of codes among patients with either outcome
+UNION ALL
+ select 'either_'+cat, (0.0+cnt)/tot sensitivity from (select cat, count(distinct patient_num) cnt from #severe_by_cat where death=1 or icu=1 group by cat) x 
+   full outer join 
+   (select count(distinct patient_num) tot from covid_cohort_validation where (death_date is not null or icu=1)) z on 2=2
  GO
-  
+ 
 -- 7.5) Optional: Submit counts for Venn diagram 
 --   *** ONLY SUBMIT THESE COUNTS IF YOUR IRB ALLOWS YOU TO SUBMIT UNBLURRED COUNTS FOR AGGREGATE QUERIES. **
 -- Note that we do need the unblurred counts to accurately calculate the Venn diagram. It is a bit tricky - (x,y) could be (x,y,z) or (x,y,~z)
