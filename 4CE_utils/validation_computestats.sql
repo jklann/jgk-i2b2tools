@@ -8,6 +8,10 @@
 --  2) Copy #covid_cohort to a permanent table. I used a table named covid_cohort_validation. This sql will do it:
         select * into covid_cohort_validation from #covid_cohort
 
+--  2a) If you need to remove non-pediatric patients, uncomment and run this (though the pediatric use case should already be limiting the cohort in the extraction script)
+/*delete c from covid_cohort_validation c inner join patient_dimension p on p.patient_num=c.patient_num
+ where datediff(year,convert(date,birth_date),admission_date)>=21*/
+
 -- 3) Copy the local codes used in your severity cohort definition to a new table called covid_cohort_severe_codes:
 create table covid_cohort_severe_codes (c_domain varchar(50),cat varchar(50),concept_cd varchar(50))
 GO
@@ -82,7 +86,7 @@ GO
 alter table covid_cohort_validation add icu int,icu_date date
 GO
 update c
-	set c.icu = 0
+	set c.icu = 0, c.icu_date = null
 	from covid_cohort_validation c --where c.icu is null
 GO
 update c
