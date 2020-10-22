@@ -122,7 +122,7 @@ select 'DEATH' as outcome, (test_outcome+0.0)/(test_outcome+outcome_only) sensit
 (select patient_num, icu, case when death_date is not null then 1 else 0 end death, severe from covid_cohort_validation v) x ) y) z
 
 -- 7) Compute prevalence of the severe measure categories and the outcomes (icu and death) among those flagged severe 
--- 8/13/20 - Now computes SENSITIVITY instead of prevalence, and does so compared to each and neither outcome (ICU/death)
+-- 8/13/20 - Now computes SENSITIVITY along with overall prevalence, and does so compared to each and neither outcome (ICU/death)
 -- Please also copy these percentages into the above spreadsheet
 select f.patient_num, min(start_date) start_date,cat,c_domain, icu, case when death_date is not null then 1 else 0 end death
   into #severe_by_cat from observation_fact f 
@@ -136,27 +136,32 @@ select 'ppv_'+cat, prevalence statistic from
 (select patient_num, icu, case when death_date is not null then 1 else 0 end death, severe from covid_cohort_validation v) x ) y
  UNPIVOT (prevalence for cat in (icu,dead)) u
 UNION ALL
+-- Prevalence of codes - of those flagged severe, what percent had a code in each category?
+ select 'prevalence_'+cat, (0.0+cnt)/tot prevalence from (select cat, count(distinct patient_num) cnt from #severe_by_cat group by cat) x 
+   full outer join 
+   (select count(distinct patient_num) tot from #severe_by_cat) z on 2=2
+UNION ALL
 -- Sensitivity of outcomes - count(ICU & severe)/count(all) and count(dead & severe)/count(all)
 select 'sens_'+cat, prevalence sensitivity from 
 (select sum(0.0+icu*severe)/sum(icu) icu,sum(0.0+severe*death)/sum(death) dead from 
 (select patient_num, icu, case when death_date is not null then 1 else 0 end death, severe from covid_cohort_validation v) x ) y
  UNPIVOT (prevalence for cat in (icu,dead)) u
--- Prevalence of codes among patients with neither ICU nor death - count(severe and NEITHER ICU NOR DEATH)/count(NEITHER ICU NOR DEATH)
+-- Sensitivity of codes among patients with neither ICU nor death - count(severe and NEITHER ICU NOR DEATH)/count(NEITHER ICU NOR DEATH)
 UNION ALL
  select 'sens_none_'+cat, (0.0+cnt)/tot sensitivity from (select cat, count(distinct patient_num) cnt from #severe_by_cat where icu=0 and death=0 group by cat) x 
    full outer join 
    (select count(distinct patient_num) tot from covid_cohort_validation where icu=0 and death_date is null) z on 2=2 
--- Prevalence of codes among ICU patients
+-- Sensitivity of codes among ICU patients
 UNION ALL
  select 'sens_icu_'+cat, (0.0+cnt)/tot sensitivity from (select cat, count(distinct patient_num) cnt from #severe_by_cat where icu=1 group by cat) x 
    full outer join 
    (select count(distinct patient_num) tot from covid_cohort_validation where icu=1) z on 2=2
--- Prevalence of codes among deceased patients
+-- Sensitivity of codes among deceased patients
 UNION ALL
  select 'sens_death_'+cat, (0.0+cnt)/tot sensitivity from (select cat, count(distinct patient_num) cnt from #severe_by_cat where death=1 group by cat) x 
    full outer join 
    (select count(distinct patient_num) tot from covid_cohort_validation where death_date is not null) z on 2=2
--- Prevalence of codes among patients with either outcome
+-- Sensitivity of codes among patients with either outcome
 UNION ALL
  select 'either_'+cat, (0.0+cnt)/tot sensitivity from (select cat, count(distinct patient_num) cnt from #severe_by_cat where death=1 or icu=1 group by cat) x 
    full outer join 
