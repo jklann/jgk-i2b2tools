@@ -70,6 +70,14 @@ GO
   from covid_cohort_validation c inner join observation_fact f  
    on c.patient_num=f.patient_num and f.start_date>=c.admission_date
    where concept_cd = 'UMLS:C1547136'
+   
+   
+-- This example uses the same ACT Critical Care derived fact for ICU stays, but uses your Phase2 data extract tables as the source, rather than covid_cohort_validation
+-- select c.patient_num, start_date as icu_admit_date, end_date as icu_discharge_date into covid_cohort_icu 
+--  from Phase2LocalPatientMapping c inner join Phase2LocalPatientSummary s on c.study_num=s.patient_num
+--  inner join observation_fact f  
+--   on c.patient_num=f.patient_num where f.start_date>=s.admission_date
+--   and concept_cd = 'UMLS:C1547136'
 
  -- This version uses CPT codes 99291 and 99292, drawing local mappings from the act_covid ontology.
  -- Use 99233 (or uncomment the last line to use the ACT ontology) if you choose - this code is also used in ICU settings but is not specific to ICU. 
@@ -99,6 +107,20 @@ update c
         group by i.patient_num
 		) s on c.patient_num = s.patient_num
 GO 
+
+-- 5b) Optional: create a phase 2 table (Phase2LocalSeverityICU) with ICU status using the mapped pseudoidentifiers from the Phase 2 extraction
+select patient_num,severe_date,severe,death_date,deceased,0 as icu, cast(null as date) as icu_date into Phase2LocalPatientSeverityICU from Phase2LocalPatientSummary
+GO
+update c
+	set c.icu = 1, c.icu_date = s.icu_date
+	from Phase2LocalPatientSeverityICU c
+		inner join (
+    select s.patient_num, min(icu_admit_date) icu_date from covid_cohort_icu i
+        inner join Phase2LocalPatientMapping c on i.patient_num=c.patient_num inner join Phase2LocalPatientSummary s on c.study_num=s.patient_num
+         where i.icu_admit_date>=s.admission_date 
+        group by s.patient_num
+		) s on c.patient_num = s.patient_num
+GO
 
 -- 6) Compute statistics (now includes ICU OR DEATH as well as ICU, DEATH separately)
 --    Put sensitivity & specificity & ppv & npv into the spreadsheet at https://docs.google.com/spreadsheets/d/1Qd3XNz1hjRy9SRt0K7guIAUDFRAmA7A2TC0vd3nsU9g/edit?usp=sharing
