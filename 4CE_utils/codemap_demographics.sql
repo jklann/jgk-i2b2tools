@@ -1,11 +1,12 @@
 -- Populate the #code_map table with race, ethnicity, and gender codes found in ncats_demographics. 
 -- For ACT sites that want to run the 4CE script: https://github.com/GriffinWeber/covid19i2b2/blob/master/4CE_Phase1.1_Files_mssql.sql
 -- Adapted from code by Aaron Abend in the i2b2-to-PCORnet transform: https://github.com/ARCH-commons/i2p-transform
--- Adaptation by Jeff Klann, PhD 05-2020. Can be found at https://github.com/jklann/jgk-i2b2tools
+-- Adaptation by Jeff Klann, PhD 05-2020 and 02-2021. Can be found at https://github.com/jklann/jgk-i2b2tools
 
--- 1. Create and populate the #code_map table, but do not include race, ethnicity, and gender codes
--- 2. Run this script to add them to the table
--- 3. If your ACT demographics table is not called ncats_demographics, change the table references in the code below.
+-- 1. Put this script at the top of your 4CE 1.1 or 1.2 script, to create the #code_map/#fource_code_map table 
+--      with your local race, ethnicity, and gender codes
+-- 2. Remove the create table line and any default race, ethnicity, and gender code inserts from the 4CE script.
+-- Note that if your ACT demographics table is not called ncats_demographics, change the table references in the code below.
 
 create table #act_codelist (codetype varchar(20), codename varchar(50),code varchar(50))
 go
@@ -98,10 +99,23 @@ go
 EXEC popcodelist
 GO
 
--- Insert these into the #code_map table
+-- For 1.1/2.1 - Insert these into the #code_map table
 insert into #code_map(code, local_code) 
 select replace(replace(replace(replace(codename,'American Indian or Alaska Native','american_indian'),
                                                 'yes','hispanic_latino'),
                                                 'Native Hawaiian or Other Pacific Islander','hawaiian_pacific_islander'),
                                                 'Black or African American','black'),code from #act_codelist
+						
+-- For 1.2/22 - Insert these into the #fource_code_map table
+create table #fource_code_map (
+	code varchar(50) not null,
+	local_code varchar(50) not null
+)
+alter table #fource_code_map add primary key (code, local_code)
+insert into #fource_code_map(code, local_code) 
+select replace(replace(replace(codetype,'RACE','race_patient:'),'HISPANIC','race_patient:'),'SEX','sex_patient:')+
+    replace(lower(replace(replace(replace(replace(codename,'American Indian or Alaska Native','american_indian'),
+                                                    'yes','hispanic_latino'),
+                                                    'Native Hawaiian or Other Pacific Islander','hawaiian_pacific_islander'),
+                                                    'Black or African American','black')),' ','_'),code from #act_codelist
                                                 
