@@ -1,0 +1,157 @@
+---
+title: "Visualize COVID-hospitalization filter"
+output: html_notebook
+---
+
+This notebook will calculate the number of COVID hospitalizations by day and week when excluding patients who had a lab order for LDH, PaO2, PaCO2, or procalcitonin +/- 2 days around hospitalization, which is hypothesized (and shown on a small labeled dataset) to filter out most patients that have a hospitalization unrelated to COVID. This is only an exploratory analysis and this is not intended to be the final filter. That will come in time with chart review and machine learning.
+
+
+```{r}
+library(tidyverse)
+library(dplyr)
+
+# SITES: SET THESE VALUES IF YOU PLAN TO SHARE YOUR RESULTS
+threshold = 3
+blur = 3
+siteid = "MGB"
+
+```
+
+```{r}
+clin_raw <- read_csv('/4ceData/Input/LocalPatientClinicalCourse.csv')
+ demo_raw <- read_csv('/4ceData/Input/LocalPatientSummary.csv',na = '1900-01-01')
+ obs_raw <- read_csv('/4ceData/Input/LocalPatientObservations.csv')
+```
+
+```{r}
+# The number of patients with one of four lab values in the first two days around admission
+magic_pts <- obs_raw %>% 
+  filter(concept_code %in% c('33959-8','2532-0','2019-8','2703-7')) %>%
+  filter(days_since_admission<2 & days_since_admission>-2) %>%
+  inner_join(demo_raw,by="patient_num") %>%
+  subset(select=c(patient_num,admission_date)) %>%
+  distinct() %>%
+  group_by(admission_date) %>%
+  count()
+ 
+all_pts <- obs_raw %>% 
+  inner_join(demo_raw,by="patient_num") %>%
+  subset(select=c(patient_num,admission_date)) %>%
+  distinct() %>%
+  group_by(admission_date) %>%
+  count()
+
+pct_pts <- all_pts %>%
+  inner_join(magic_pts,by="admission_date") %>%
+  mutate(pct = 100 - (n.y/n.x * 100)) %>% # This is dropping out a few null rows where there were no patients matching the filter that day
+  subset(select=c(admission_date,pct)) %>%
+  rename(n=pct)
+```
+
+```{r}
+# Proportion of patients with special labs vs. all pts
+pct_alltime <- sum(magic_pts$n)/sum(all_pts$n)*100
+print(c("Percent of admissions removed by the 4-lab filter:",pct_alltime))
+```
+
+This tells us overall how many admissions are being removed. The percentage graph below shows this by week.
+
+```{r}
+# Combine both data sets (all pts and magic pts) into one data set and visualize
+
+# First, label the datasets
+magic_pts$label <- rep("selected",nrow(magic_pts))
+all_pts$label <- rep("all",nrow(all_pts))
+pct_pts$label <- rep("percent",nrow(pct_pts))
+
+# Create a difference of patients
+diff_pts <- all_pts %>% inner_join(magic_pts,by="admission_date") %>% mutate(diff = n.x-n.y) %>%
+  subset(select=c(admission_date,diff)) %>% 
+  rename(n=diff) %>%
+  mutate(label="diff")
+
+# Combine and viz
+pts <- union_all(union_all(all_pts,diff_pts),magic_pts) # <-- why do I have nest these? seems like it should work with three arguments...
+ ggplot(pts,aes(y=n,x=admission_date,group=label)) +
+  geom_line(aes(color=label,linetype=label))  +
+   ggtitle("Patients removed by the hypothesized non-COVID-admission filter")
+```
+
+This shows all hospitalizations by day vs. hospitalizations by day with the filter applied ("selected"). "ALL" hospitalizations includes only the hospitalizations in the COVID cohort, so all hospitalizations involve a COVID-positive test. A third line shows the difference between the two ("diff"), which is the number of hospitalizations excluded by the filter. 
+
+
+```{r}
+# Do the same thing, but by week
+magic_pts_byweek <-
+  magic_pts %>% mutate(week=week(admission_date)+((year(admission_date)-2020)*52)) %>% group_by(week) %>% summarise(n_week = sum(n)) %>%
+    mutate(label="selected")
+all_pts_byweek <-
+  all_pts %>% mutate(week=week(admission_date)+((year(admission_date)-2020)*52)) %>% group_by(week) %>% summarise(n_week = sum(n)) %>%
+    mutate(label="all")
+pct_pts_byweek <- all_pts_byweek %>% inner_join(magic_pts_byweek,by="week") %>% mutate(pct = 100 - n_week.y/n_week.x * 100) %>%
+    mutate(label="percent")
+diff_pts_byweek <- all_pts_byweek %>% inner_join(magic_pts_byweek,by="week") %>% mutate(n_week =  n_week.x-n_week.y) %>%
+    mutate(label="diff")
+# Combine and viz
+pts_byweek <- union_all(union_all(all_pts_byweek,diff_pts_byweek),magic_pts_byweek) # <-- why do I have nest these? seems like it should work with three arguments...
+pts_byweek <- pts_byweek %>% mutate(week_name=ymd("2020-01-01")+weeks(week))
+
+ ggplot(pts_byweek,aes(y=n_week,x=week_name,group=label)) +
+  geom_line(aes(color=label,linetype=label))  +
+   ggtitle("Patients removed by the hypothesized non-COVID-admission filter\n (by week)") +
+   labs(y="Number of admissions by week",x="Week (starting Jan 2020)")
+```
+ 
+ The same visualization, but presented more cleanly, by week.
+ 
+```{r}
+#Also plot the percentage removed by the filter
+ ggplot(pct_pts_byweek,aes(y=pct,x=week)) +
+  geom_line(color="blue") +
+  ggtitle("Percent of patients removed by the same filter")
+```
+
+This shows the percentage of total patients seen each week that are excluded by the filter. Perhaps this is most informative, because (at MGB at least) it increases after the first wave of COVID (when hospitals were opening back up) even though the absolute number of COVID-positive hospitalizatins went down.
+
+```{r}
+# Blur and save the blurred version to /4ceData/out/[siteid]_admitfilterresults.rda
+
+# Blurring function from Trang. Thanks Trang!
+blur_it <- function(df, vars, blur_abs, mask_thres){
+  # Obfuscate count values.
+  # If blurring range is +/-3, or blur_abs = 3,
+  # the count receive a small addition of a random number from -3 to 3.
+  # If a count is less than mask_thres, set that count to 0.
+
+  for (var in vars){
+    var <- sym(var)
+    blur_vec <- sample(seq(- blur_abs, blur_abs), nrow(df), replace = TRUE)
+    df <- df %>%
+      mutate(!!var := !!var + blur_vec,
+             !!var := ifelse(abs(!!var) < mask_thres, 0, !!var))
+  }
+  df
+}
+
+# Blur
+pts_byweek_blur <- pts_byweek %>% blur_it("n_week",blur,threshold) %>% select(week,n_week,label,week_name) 
+results <- list(pts_byweek = pts_byweek_blur, pts_pct_byweek = pct_pts_byweek)
+site_results <- paste0(siteid, '_results')
+assign(site_results, results)
+save(list=site_results, file=file.path("/4ceData/out",paste0(siteid,"_admitfilterresults.rda"))) 
+
+# Plot blurred version
+ ggplot(pts_byweek_blur,aes(y=n_week,x=week_name,group=label)) +
+  geom_line(aes(color=label,linetype=label))  +
+   ggtitle("Patients removed by the hypothesized non-COVID-admission filter \n(by week, obfuscated)") +
+   labs(y="Number of admissions by week",x="Week (starting Jan 2020)")
+```
+
+Here we blur and threshold the results and save them to the file /4ceData/out/[siteid]_admitfilterresults.rda. Although you do not need to share anything, feel free to share the obfuscated graph or the percentage graph on slack, and/or the file, which contains only the contents of these two graphs.
+
+
+
+
+
+
+
