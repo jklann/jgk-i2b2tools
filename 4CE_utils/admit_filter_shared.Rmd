@@ -9,6 +9,7 @@ This notebook will calculate the number of COVID hospitalizations by day and wee
 ```{r}
 library(tidyverse)
 library(dplyr)
+library(lubridate)
 
 # SITES: SET THESE VALUES IF YOU PLAN TO SHARE YOUR RESULTS
 threshold = 3
