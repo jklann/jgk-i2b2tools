@@ -6,7 +6,7 @@
 -- FROM THE SESSION WHERE YOU'VE RUN THE 4CE 1.1 SCRIPT (SO THE CODE CAN ACCESS THE TEMP TABLES):
 
 --  2) Copy #covid_cohort to a permanent table. I used a table named covid_cohort_validation. This sql will do it:
-        select * into covid_cohort_validation from #covid_cohort
+        select * into fource.covid_cohort_validation from #covid_cohort
 
 --  2a) If you need to remove non-pediatric patients, uncomment and run this (though the pediatric use case should already be limiting the cohort in the extraction script)
 /*delete c from covid_cohort_validation c inner join patient_dimension p on p.patient_num=c.patient_num
@@ -65,15 +65,14 @@ GO
 --    The two examples below use a derived fact or CPT codes, respectively.
 --    *** MODIFY THIS FOR YOUR SITE! ***
 
- -- This version works with the ACT Critical Care derived fact for ICU stays
- select c.patient_num, start_date as icu_admit_date, end_date as icu_discharge_date into covid_cohort_icu 
-  from covid_cohort_validation c inner join observation_fact f  
+ -- This version works with the ACT Critical Care derived fact for ICU stays, from a table called derived_fact (change to your fact table name)
+ select c.patient_num, start_date as icu_admit_date, end_date as icu_discharge_date into fource.covid_cohort_icu 
+  from fource.covid_cohort_validation c inner join derived_fact f  
    on c.patient_num=f.patient_num and f.start_date>=c.admission_date
    where concept_cd = 'UMLS:C1547136'
    
-   
 -- This example uses the same ACT Critical Care derived fact for ICU stays, but uses your Phase2 data extract tables as the source, rather than covid_cohort_validation
--- select c.patient_num, start_date as icu_admit_date, end_date as icu_discharge_date into covid_cohort_icu 
+-- select c.patient_num, start_date as icu_admit_date, end_date as icu_discharge_date into fource.covid_cohort_icu 
 --  from Phase2LocalPatientMapping c inner join Phase2LocalPatientSummary s on c.study_num=s.patient_num
 --  inner join observation_fact f  
 --   on c.patient_num=f.patient_num where f.start_date>=s.admission_date
@@ -83,44 +82,63 @@ GO
  -- Use 99233 (or uncomment the last line to use the ACT ontology) if you choose - this code is also used in ICU settings but is not specific to ICU. 
  --   At MGB, the results looked most like the derived fact using only 99291 and 99292.
  -- Use the CPT approach if your site does not have more accurate data from the EHR.
- select c.patient_num, start_date as icu_admit_date, end_date as icu_discharge_date into covid_cohort_icu
-  from covid_cohort_validation c inner join observation_fact f  
+ select c.patient_num, start_date as icu_admit_date, end_date as icu_discharge_date into fource.covid_cohort_icu
+  from fource.covid_cohort_validation c inner join observation_fact f  
    on c.patient_num=f.patient_num and f.start_date>=c.admission_date
    where concept_cd in 
      (select c_basecode from act_covid where C_FULLNAME like '%\CPT4_99291\%' or c_fullname like '%\CPT4_99292\%' )--or c_fullname like '%\SETTING_INPATIENT\A23576533\A23577341\A21042835\%')
 
 --  5) Add an ICU column to the table and get ICU status from the ICU table in step 3.
 --    If your ICU table is different than mine, you will need to alter the logic in the inner join (see below).
-alter table covid_cohort_validation add icu int,icu_date date
+alter table fource.covid_cohort_validation add icu int,icu_date date
 GO
 update c
 	set c.icu = 0, c.icu_date = null
-	from covid_cohort_validation c --where c.icu is null
+	from fource.covid_cohort_validation c --where c.icu is null
 GO
 update c
 	set c.icu = 1, c.icu_date = s.icu_date
-	from covid_cohort_validation c
+	from fource.covid_cohort_validation c
 		inner join (
 	-- Alter this logic as needed to get first ICU admission after COVID hospitalization
-    select i.patient_num, min(icu_admit_date) icu_date from covid_cohort_icu i
-        inner join covid_cohort_validation c on c.patient_num=i.patient_num and i.icu_admit_date>=c.admission_date -- bugfix 7/29/20
+    select i.patient_num, min(icu_admit_date) icu_date from fource.covid_cohort_icu i
+        inner join fource.covid_cohort_validation c on c.patient_num=i.patient_num and i.icu_admit_date>=c.admission_date -- bugfix 7/29/20
         group by i.patient_num
 		) s on c.patient_num = s.patient_num
 GO 
 
 -- 5b) Optional: create a phase 2 table (Phase2LocalSeverityICU) with ICU status using the mapped pseudoidentifiers from the Phase 2 extraction
-select patient_num,severe_date,severe,death_date,deceased,0 as icu, cast(null as date) as icu_date into Phase2LocalPatientSeverityICU from Phase2LocalPatientSummary
+select patient_num,severe_date,severe,death_date,deceased,0 as icu, cast(null as date) as icu_date into fource.Phase2LocalPatientSeverityICU from fource.Phase2LocalPatientSummary
 GO
 update c
 	set c.icu = 1, c.icu_date = s.icu_date
-	from Phase2LocalPatientSeverityICU c
+	from fource.Phase2LocalPatientSeverityICU c
 		inner join (
-    select s.patient_num, min(icu_admit_date) icu_date from covid_cohort_icu i
-        inner join Phase2LocalPatientMapping c on i.patient_num=c.patient_num inner join Phase2LocalPatientSummary s on c.study_num=s.patient_num
+    select s.patient_num, min(icu_admit_date) icu_date from fource.covid_cohort_icu i
+        inner join fource.Phase2LocalPatientMapping c on i.patient_num=c.patient_num inner join fource.Phase2LocalPatientSummary s on c.study_num=s.patient_num
          where i.icu_admit_date>=s.admission_date 
         group by s.patient_num
 		) s on c.patient_num = s.patient_num
 GO
+
+/* 5b. Add chart review admitted_for_covid flag to the table created in 5a. 
+
+This code shows an example of how to add an admitted_for_covid flag to a Phase 2 table. Here, Phase2LocalPatientSeverityICU is a table with patient_nums
+that are the study_nums (obfuscated patient_nums) in all the Phase2 tables. hg_emrn is a table with patient encrypted MRNs (column eMRN) and a
+flag indicating a covid or a routine admission (covid_or_routine_flag, encoded here as "yes" or "no". This code maps the encrypted MRN to the i2b2 patient_num
+using the patient_mapping table and then the 4CE study_num using the Phase2LocalPatientMapping table. 
+
+alter table fource.Phase2LocalPatientSeverityICU add admitted_for_covid int
+
+update c
+	set c.admitted_for_covid = x.admitted_for_covid
+	from fource.Phase2LocalPatientSeverityICU c
+	inner join (
+      select study_num, case when covid_or_routine_flag='Yes' then 1 else 0 end admitted_for_covid from fource.hg_emrn e
+      inner join patient_mapping m on e.eMRN=m.patient_ide
+      inner join fource.Phase2LocalPatientMapping c on m.patient_num=c.patient_num 
+      ) x on x.study_num=c.patient_num    
+*/
 
 -- 6) Compute statistics (now includes ICU OR DEATH as well as ICU, DEATH separately)
 --    Put sensitivity & specificity & ppv & npv into the spreadsheet at https://docs.google.com/spreadsheets/d/1Qd3XNz1hjRy9SRt0K7guIAUDFRAmA7A2TC0vd3nsU9g/edit?usp=sharing
@@ -129,33 +147,33 @@ GO
 select 'ICU|DEATH' as outcome, (test_outcome+0.0)/(test_outcome+outcome_only) sensitivity, (neither+0.0)/(test_only+neither) specificity, (test_outcome+0.0)/(test_outcome+test_only) ppv, (neither+0.0)/(neither+outcome_only) npv, z.* from
 (select sum(icudeath*severe) test_outcome, sum(icudeath)-sum(icudeath*severe) outcome_only, sum(severe)-sum(icudeath*severe) test_only, sum(case when icudeath=0 and severe=0 then 1 else 0 end) neither from
 (select *, case when icu=1 or death=1 then 1 else 0 end icudeath from 
-(select patient_num, icu, case when death_date is not null then 1 else 0 end death, severe from covid_cohort_validation v) x ) y) z
+(select patient_num, icu, case when death_date is not null then 1 else 0 end death, severe from fource.covid_cohort_validation v) x ) y) z
 UNION ALL
 -- ICU
 select 'ICU' as outcome, (test_outcome+0.0)/(test_outcome+outcome_only) sensitivity, (neither+0.0)/(test_only+neither) specificity, (test_outcome+0.0)/(test_outcome+test_only) ppv, (neither+0.0)/(neither+outcome_only) npv, z.* from
 (select sum(icudeath*severe) test_outcome, sum(icudeath)-sum(icudeath*severe) outcome_only, sum(severe)-sum(icudeath*severe) test_only, sum(case when icudeath=0 and severe=0 then 1 else 0 end) neither from
 (select *, case when icu=1 then 1 else 0 end icudeath from 
-(select patient_num, icu, case when death_date is not null then 1 else 0 end death, severe from covid_cohort_validation v) x ) y) z
+(select patient_num, icu, case when death_date is not null then 1 else 0 end death, severe from fource.covid_cohort_validation v) x ) y) z
 UNION ALL
  -- Death
 select 'DEATH' as outcome, (test_outcome+0.0)/(test_outcome+outcome_only) sensitivity, (neither+0.0)/(test_only+neither) specificity, (test_outcome+0.0)/(test_outcome+test_only) ppv, (neither+0.0)/(neither+outcome_only) npv, z.* from
 (select sum(icudeath*severe) test_outcome, sum(icudeath)-sum(icudeath*severe) outcome_only, sum(severe)-sum(icudeath*severe) test_only, sum(case when icudeath=0 and severe=0 then 1 else 0 end) neither from
 (select *, case when death=1 then 1 else 0 end icudeath from 
-(select patient_num, icu, case when death_date is not null then 1 else 0 end death, severe from covid_cohort_validation v) x ) y) z
+(select patient_num, icu, case when death_date is not null then 1 else 0 end death, severe from fource.covid_cohort_validation v) x ) y) z
 
 -- 7) Compute prevalence of the severe measure categories and the outcomes (icu and death) among those flagged severe 
 -- 8/13/20 - Now computes SENSITIVITY along with overall prevalence, and does so compared to each and neither outcome (ICU/death)
 -- Please also copy these percentages into the above spreadsheet
 select f.patient_num, min(start_date) start_date,cat,c_domain, icu, case when death_date is not null then 1 else 0 end death
   into #severe_by_cat from observation_fact f 
-   inner join covid_cohort_validation c on f.patient_num = c.patient_num and f.start_date >= c.admission_date
+   inner join fource.covid_cohort_validation c on f.patient_num = c.patient_num and f.start_date >= c.admission_date
    inner join covid_cohort_severe_codes s on s.concept_cd=f.concept_cd
    group by f.patient_num,cat,c_domain,icu,death_date
 GO
 -- PPV of outcomes - count(ICU & severe)/count(severe) and count(dead & severe)/count(severe)
 select 'ppv_'+cat, prevalence statistic from 
 (select sum(0.0+icu*severe)/sum(severe) icu,sum(0.0+severe*death)/sum(severe) dead from 
-(select patient_num, icu, case when death_date is not null then 1 else 0 end death, severe from covid_cohort_validation v) x ) y
+(select patient_num, icu, case when death_date is not null then 1 else 0 end death, severe from fource.covid_cohort_validation v) x ) y
  UNPIVOT (prevalence for cat in (icu,dead)) u
 UNION ALL
 -- Prevalence of codes - of those flagged severe, what percent had a code in each category?
@@ -166,28 +184,28 @@ UNION ALL
 -- Sensitivity of outcomes - count(ICU & severe)/count(all) and count(dead & severe)/count(all)
 select 'sens_'+cat, prevalence sensitivity from 
 (select sum(0.0+icu*severe)/sum(icu) icu,sum(0.0+severe*death)/sum(death) dead from 
-(select patient_num, icu, case when death_date is not null then 1 else 0 end death, severe from covid_cohort_validation v) x ) y
+(select patient_num, icu, case when death_date is not null then 1 else 0 end death, severe from fource.covid_cohort_validation v) x ) y
  UNPIVOT (prevalence for cat in (icu,dead)) u
 -- Sensitivity of codes among patients with neither ICU nor death - count(severe and NEITHER ICU NOR DEATH)/count(NEITHER ICU NOR DEATH)
 UNION ALL
  select 'sens_none_'+cat, (0.0+cnt)/tot sensitivity from (select cat, count(distinct patient_num) cnt from #severe_by_cat where icu=0 and death=0 group by cat) x 
    full outer join 
-   (select count(distinct patient_num) tot from covid_cohort_validation where icu=0 and death_date is null) z on 2=2 
+   (select count(distinct patient_num) tot from fource.covid_cohort_validation where icu=0 and death_date is null) z on 2=2 
 -- Sensitivity of codes among ICU patients
 UNION ALL
  select 'sens_icu_'+cat, (0.0+cnt)/tot sensitivity from (select cat, count(distinct patient_num) cnt from #severe_by_cat where icu=1 group by cat) x 
    full outer join 
-   (select count(distinct patient_num) tot from covid_cohort_validation where icu=1) z on 2=2
+   (select count(distinct patient_num) tot from fource.covid_cohort_validation where icu=1) z on 2=2
 -- Sensitivity of codes among deceased patients
 UNION ALL
  select 'sens_death_'+cat, (0.0+cnt)/tot sensitivity from (select cat, count(distinct patient_num) cnt from #severe_by_cat where death=1 group by cat) x 
    full outer join 
-   (select count(distinct patient_num) tot from covid_cohort_validation where death_date is not null) z on 2=2
+   (select count(distinct patient_num) tot from fource.covid_cohort_validation where death_date is not null) z on 2=2
 -- Sensitivity of codes among patients with either outcome
 UNION ALL
  select 'either_'+cat, (0.0+cnt)/tot sensitivity from (select cat, count(distinct patient_num) cnt from #severe_by_cat where death=1 or icu=1 group by cat) x 
    full outer join 
-   (select count(distinct patient_num) tot from covid_cohort_validation where (death_date is not null or icu=1)) z on 2=2
+   (select count(distinct patient_num) tot from fource.covid_cohort_validation where (death_date is not null or icu=1)) z on 2=2
  GO
  
 -- 7.5) Optional: Submit counts for Venn diagram 
@@ -207,8 +225,18 @@ UNION ALL
    
 -- 8) Optional: export data for R code (also in the GitHub)
 -- Export this as labels.csv
-select patient_num, admission_date hospitalization_date, case when death_date is not null or icu=1 then 'Y' else 'N' end label  from covid_cohort_validation
+select patient_num, admission_date hospitalization_date, case when death_date is not null or icu=1 then 'Y' else 'N' end label  from fource.covid_cohort_validation
 -- Export this as facts.csv
 select f.patient_num, cat phenx,start_date,f.concept_cd  from observation_fact f 
-   inner join covid_cohort_validation c on f.patient_num = c.patient_num and f.start_date >= c.admission_date
+   inner join fource.covid_cohort_validation c on f.patient_num = c.patient_num and f.start_date >= c.admission_date
    inner join covid_cohort_severe_codes s on s.concept_cd=f.concept_cd
+
+  /* Working on breakdown by codes? -ignore 
+ select f.patient_num, min(start_date) start_date,cat+'|'+s.concept_cd code,c_domain, icu, case when death_date is not null then 1 else 0 end death
+  into #severe_by_code from observation_fact f 
+   inner join fource.covid_cohort_validation c on f.patient_num = c.patient_num and f.start_date >= c.admission_date
+   inner join covid_cohort_severe_codes s on s.concept_cd=f.concept_cd
+   group by f.patient_num,cat+'|'+s.concept_cd,c_domain,icu,death_date
+ select code, (0.0+cnt)/tot sensitivity from (select code, count(distinct patient_num) cnt from #severe_by_code where death=1 or icu=1 group by code) x 
+   full outer join 
+   (select count(distinct patient_num) tot from fource.covid_cohort_validation where (death_date is not null or icu=1)) z on 2=2  */
