@@ -102,3 +102,9 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+.Rproj.user
+
+# Rdata
+4CE_utils/data/
+.DS_Store
+jgk-i2b2tools.Rproj
