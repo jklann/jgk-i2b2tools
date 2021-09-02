@@ -36,7 +36,9 @@ library(grid)
   data_dir <- FourCePhase2.1Data::getInputDataDirectoryName()
   currSiteId <- FourCePhase2.1Data::getSiteId()
   CurrSiteId <- toupper(currSiteId)
-
+  
+# 8/13/21 - set directory for 2.2v
+data_dir <- '/4ceData_x2/4ceData_x2/Local/Input'
 
 # SITES: SET THESE VALUES IF YOU PLAN TO SHARE YOUR RESULTS
 threshold = 3
@@ -83,7 +85,7 @@ if (file.exists(file.path(data_dir, "LocalPatientSeverityIcu.csv"))){
       col_types = list(patient_num = readr::col_character())
     )}
 ```
- 
+
 This part calculates stuff. If you've loaded icu_raw, calculate the number of patients with chart-reviewed COVID-admission or chart-reviewed non-COVID-admission
 
 ```{r}
@@ -150,6 +152,12 @@ magic_pts_set <- obs_raw %>%
   filter(days_since_admission<2 & days_since_admission>-2) %>%
   inner_join(demo_raw,by="patient_num") %>%
   subset(select=c(patient_num,admission_date))
+
+# 8/20/21 - USE THIS TO MAKE THE FILTER IS AN **AND** FILTER
+# GET RID OF THE -1, I JUST DID THIS TO ALLOW 3/4 of the list
+# magic_pts_set <- obs_raw %>% filter(concept_code %in% fource_filter) %>% filter(days_since_admission<2 & days_since_admission>-2) %>% group_by(patient_num) %>% summarise(Unique_Filter_Codes=n_distinct(concept_code)) %>% filter(Unique_Filter_Codes>=length(fource_filter)-1) %>% 
+#     inner_join(demo_raw,by="patient_num") %>%
+#   subset(select=c(patient_num,admission_date))
 
 magic_pts_byweek <- magic_pts_set %>%
   fn_summarize_byweek("selected")
