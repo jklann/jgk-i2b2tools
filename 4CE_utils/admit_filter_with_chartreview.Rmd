@@ -369,7 +369,7 @@ pre_pts_byweek_nofilter <- pt_level_df %>%
 
 pct_chart_admit <- pre_pts_byweek_nofilter %>%
   mutate(pct = (truedot/(truedot+falsedot) * 100)) %>% drop_na() %>%
-  subset(select=c(week,pct,truedot,falsedot)) %>%
+  subset(select=c(week,pct)) %>%
   rename(n_week=pct) %>% mutate(week_name=ymd("2020-01-01")+weeks(week))
 
   # Plot % of chart-reviewed patients admitted for COVID, by week
@@ -388,7 +388,8 @@ results <- list(
   pts_byweek = blurred_pts_byweek,
   # pts_pct_byweek = pct_pts,
   summary_stats = summary_stats[1:5],
-  pct_alltime = pct_alltime
+  pct_alltime = pct_alltime,
+  pct_chart_admit = pct_chart_admit
 )
 site_results <- paste0(currSiteId, "_results")
 assign(site_results, results)
