@@ -353,6 +353,35 @@ plot_rug(blurred_pts_byweek, "Obfuscated")
 Here we blur and threshold the results and save them to the file /4ceData/out/[siteid]_admitfilterresults.rda. Although you do not need to share anything, feel free to share the obfuscated graph or the percentage graph on slack, and/or the file, which contains only the contents of these two graphs.
 
 ```{r}
+# Additional visualization showing only accuracy of chart reviews
+# I did this quickly, it certainly could be done with less code!
+
+pre_pts_byweek_nofilter <- pt_level_df %>%
+  select(label, patient_num, admission_date, admitted_for_covid) %>%
+  distinct() %>%
+  mutate(week = week(admission_date) + ((year(admission_date) - 2020) * 52)) %>%
+  group_by(week) %>%
+  summarise(
+    truedot = sum(subset(admitted_for_covid,admitted_for_covid<2), na.rm = TRUE), #jgk 9-2-21, handle maybes coded as 2
+    falsedot = sum(!subset(admitted_for_covid,admitted_for_covid<2), na.rm = TRUE),
+    n_week = n() %>% na_if(0), .groups = "drop"
+  )
+
+pct_chart_admit <- pre_pts_byweek_nofilter %>%
+  mutate(pct = (truedot/(truedot+falsedot) * 100)) %>% drop_na() %>%
+  subset(select=c(week,pct,truedot,falsedot)) %>%
+  rename(n_week=pct) %>% mutate(week_name=ymd("2020-01-01")+weeks(week))
+
+  # Plot % of chart-reviewed patients admitted for COVID, by week
+  ggplot(data=pct_chart_admit) +
+    geom_point(data=pct_chart_admit, aes(y=n_week,x=week_name,label="# Chart-reviewed")) +
+    geom_smooth(data=pct_chart_admit, aes(y=n_week,x=week_name,method="leoss")) +
+     ggtitle(paste("Percent of chart-reviewed 4CE patients actually admitted for COVID, by week\n ")) +
+   labs(y="Percent found to be admitted for COVID",x="Week (starting Jan 2020)") + 
+  scale_size(guide = guide_legend(title="Number chart-reviewed")) 
+```
+
+```{r}
 # Save Results and save the blurred version to /4ceData/out/[siteid]_admitfilterresults.rda
 # TODO : We don't save the counts in the summary stats because they're not blurred. We could blur them!
 results <- list(
