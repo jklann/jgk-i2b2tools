@@ -1,6 +1,8 @@
 ---
 title: "Visualize COVID-hospitalization filter, with chart-reviewed patients"
 output: html_notebook
+editor_options: 
+  chunk_output_type: console
 ---
 
 Written by Jeffrey Klann, PhD
@@ -25,233 +27,178 @@ Future improvement list:
 
 
 ```{r}
-# Uncomment for the first run - install.packages("plyr")
-library(plyr)
 library(tidyverse)
-library(dplyr)
 library(lubridate)
 library(grid)
+library(glue)
+library(directlabels)
 
 # Get params from FourCePhase2.1Data
-  data_dir <- FourCePhase2.1Data::getInputDataDirectoryName()
-  currSiteId <- FourCePhase2.1Data::getSiteId()
-  CurrSiteId <- toupper(currSiteId)
+# data_dir <- "../4ce/Input"
+# currSiteId <- "upenn"
+# fake_chart_review <- TRUE
+# threshold <- 10
+# blur <- 0
+
+data_dir <- FourCePhase2.1Data::getInputDataDirectoryName()
+currSiteId <- FourCePhase2.1Data::getSiteId()
   
-# 8/13/21 - set directory for 2.2v
-data_dir <- '/4ceData_x2/4ceData_x2/Local/Input'
+# 8/13/21 - jgk - set directory for 2.2 version if desired
+#data_dir <- '/4ceData_x2/4ceData_x2/Local/Input'
 
+fake_chart_review <- FALSE
 # SITES: SET THESE VALUES IF YOU PLAN TO SHARE YOUR RESULTS
-threshold = 3
-blur = 3
+threshold <- 3
+blur <- 3
 
-# Also configurable: what filter will we use to do our analysis? 
-fource_filter <- c('33959-8','2532-0','2019-8','2703-7') # LDH, PaO2, PaCO2, or procalcitonin
-#fource_filter <- c('48065-7') # ddimer FEU
+# Also configurable: what filter will we use to do our analysis?
+# LDH, PaO2, PaCO2, or procalcitonin
+fource_filter <- c("33959-8", "2532-0", "2019-8", "2703-7")
+# fource_filter <- c('48065-7') # ddimer FEU
 
 ```
 
 ```{r}
-  # Load the data
-  clin_raw <-
-    readr::read_csv(
-      file.path(data_dir, "LocalPatientClinicalCourse.csv"),
-      col_types = list(patient_num = readr::col_character())
-    )
-  obs_raw <-
-    readr::read_csv(
-      file.path(data_dir, "LocalPatientObservations.csv"),
-      col_types = list(patient_num = readr::col_character())
-    )
-  demo_raw <-
-    readr::read_csv(
-      file.path(data_dir, "LocalPatientSummary.csv"),
-      col_types = list(patient_num = readr::col_character()),
-      na = c("1900-01-01", "1/1/1900")
-    )
-  
+CurrSiteId <- toupper(currSiteId)
+# Load the data
+clin_raw <-
+  readr::read_csv(
+    file.path(data_dir, "LocalPatientClinicalCourse.csv"),
+    col_types = list(patient_num = readr::col_character())
+  )
+obs_raw <-
+  readr::read_csv(
+    file.path(data_dir, "LocalPatientObservations.csv"),
+    col_types = list(patient_num = readr::col_character())
+  )
+demo_raw <-
+  readr::read_csv(
+    file.path(data_dir, "LocalPatientSummary.csv"),
+    col_types = list(patient_num = readr::col_character()),
+    na = c("1900-01-01", "1/1/1900")
+  ) %>%
   # Fix for datetimes (Oracle code?)
-  demo_raw$admission_date <- as_date(demo_raw$admission_date)
- 
- # Optional - table with ICU and chart review flag data
- # This script two columns: patient_num (which is the patient_num from the 2.1 study cohort, not i2b2), and
- #  chart-review flag in a column called admitted_for_covid, which should be 1 if chart-reviewed as admitted for COVID,
- #  0 if chart-reviewed as not admitted for COVID, and null otherwise.
- # See steps 5a and 5b in https://github.com/jklann/jgk-i2b2tools/blob/master/4CE_utils/validation_computestats.sql
-icu_raw<-tibble(patient_num = "x",admitted_for_covid = NA)
-if (file.exists(file.path(data_dir, "LocalPatientSeverityIcu.csv"))){
- icu_raw  <-
-    readr::read_csv(
-      file.path(data_dir, "LocalPatientSeverityIcu.csv"),
-      col_types = list(patient_num = readr::col_character())
-    )}
+  mutate(admission_date = as_date(admission_date))
+
+# Optional - 
+# Load table with chart review flag data
+# This script must have at least three columns: 
+#    patient_num : the patient_num from the 2.1 study cohort, not necessarily i2b2
+#    admitted_for_covid : chart-reviewed admission flag, 1 if chart-reviewed as admitted for COVID, 0 if chart-reviewed as not admitted for COVID, and 2 for maybe.
+#    severe_covid : chart-reviewed severity flag, 1 if chart-reviewed severe illness, 0 if chart-reviewed non-severe illness, NULL otherwise
+
+if (fake_chart_review) { # fake number
+  icu_raw <- tibble(
+    patient_num = as.character(1:50),
+    admitted_for_covid = c(rep(TRUE, 40), rep(FALSE, 10))
+  )
+} else {
+  icu_raw <- tibble(patient_num = "x", admitted_for_covid = NA)
+  if (file.exists(file.path(data_dir, "LocalPatientAdmissionChartReview.csv"))) {
+    icu_raw <-
+      readr::read_csv(
+        file.path(data_dir, "LocalPatientAdmissionChartReview.csv.csv"),
+        col_types = list(patient_num = readr::col_character())
+      )
+  }
+}
 ```
 
 This part calculates stuff. If you've loaded icu_raw, calculate the number of patients with chart-reviewed COVID-admission or chart-reviewed non-COVID-admission
 
 ```{r}
+round_any <- function(x, accuracy, f = round) {
+  f(x / accuracy) * accuracy
+}
+
 # Blurring function from Trang. Thanks Trang!
-blur_it <- function(df, vars, blur_abs, mask_thres){
+blur_it <- function(df, vars, blur_abs, mask_thres) {
   # Obfuscate count values.
   # If blurring range is +/-3, or blur_abs = 3,
   # the count receive a small addition of a random number from -3 to 3.
   # If a count is less than mask_thres, set that count to 0.
 
-  for (var in vars){
+  for (var in vars) {
     var <- sym(var)
-    blur_vec <- sample(seq(- blur_abs, blur_abs), nrow(df), replace = TRUE)
+    blur_vec <- sample(seq(-blur_abs, blur_abs), nrow(df), replace = TRUE)
     df <- df %>%
-      mutate(!!var := !!var + blur_vec,
-             !!var := ifelse(abs(!!var) < mask_thres, 0, !!var))
+      mutate(
+        !!var := !!var + blur_vec,
+        !!var := ifelse(abs(!!var) < mask_thres, 0, !!var)
+      )
   }
   df
 }
 
 # Simple blurring function for a single value. Does the same thing as blur_it.
-blur_that <- function(value,blur_abs,mask_thres) {
-  as.integer(ifelse(value<mask_thres,0,value + sample(seq(- blur_abs, blur_abs),1)))
+blur_that <- function(value, blur_abs, mask_thres) {
+  as.integer(ifelse(value < mask_thres, 0, value + sample(seq(-blur_abs, blur_abs), 1)))
 }
 
 # Thanks Chuan Hong for this summary stats function!
 # Sensitivity: TP/(All Positive)
 # Variable names: first bit is test pos/neg, second bit is truth pos/neg
-PAR.fun=function(n11,n10,n01,n00){
-  sens=n11/(n11+n01)
-  spec=n00/(n10+n00)
-  ppv=n11/(n10+n11)
-  npv=n00/(n00+n01)
-  fscore=2*sens*ppv/(sens+ppv)
-  res=c(c(sens,spec,ppv,npv,fscore,n11,n10,n01,n00))
-  names(res)=c("sens", "spec", "ppv", "npv", "fscore","TP","FP","FN","TN")
+PAR.fun <- function(n11, n10, n01, n00) {
+  sens <- n11 / (n11 + n01)
+  spec <- n00 / (n10 + n00)
+  ppv <- n11 / (n10 + n11)
+  npv <- n00 / (n00 + n01)
+  fscore <- 2 * sens * ppv / (sens + ppv)
+  res <- c(c(sens, spec, ppv, npv, fscore, n11, n10, n01, n00))
+  names(res) <- c("sens", "spec", "ppv", "npv", "fscore", "TP", "FP", "FN", "TN")
   res
 }
 
-covidWeeks = demo_raw %>%
-  mutate(c_week=week(admission_date)+((year(admission_date)-2020)*52))
+pt_level_df <- obs_raw %>%
+  mutate(selected = concept_code %in% fource_filter & 
+           between(days_since_admission, -1, 1)) %>%
+  group_by(patient_num) %>%
+  mutate(label = if_else(max(selected) == 1, "selected", "diff")) %>%
+  left_join(icu_raw, by = "patient_num") %>%
+  inner_join(select(demo_raw, patient_num, admission_date), by = "patient_num")
 
-# Count distinct patient_num by admission_date and then group and sum by week.
-# Also add a column label=dflabel. Sets zeros to NA.
-fn_summarize_byweek <- function(df,dflabel) 
-{
-  mydf <- df %>%
-  subset(select=c(patient_num,admission_date)) %>%
+pre_pts_byweek <- pt_level_df %>%
+  select(label, patient_num, admission_date, admitted_for_covid) %>%
   distinct() %>%
-  group_by(admission_date) %>%
-  count() %>%
-  mutate(week=week(admission_date)+((year(admission_date)-2020)*52)) %>%
-  group_by(week) %>% summarise(n_week = sum(n)) %>%
-  mutate(label=dflabel) %>%
-  mutate(n_week=na_if(n_week,0)) 
-  
-  # Bugfix, now makes all weeks present, fills empty weeks with NA
-  tibble(week = min(covidWeeks$c_week):max(covidWeeks$c_week)) %>% left_join(mydf,by='week')
-}
+  mutate(week = week(admission_date) + ((year(admission_date) - 2020) * 52)) %>%
+  group_by(week, label) %>%
+  summarise(
+    truedot = sum(admitted_for_covid, na.rm = TRUE),
+    falsedot = sum(!admitted_for_covid, na.rm = TRUE),
+    n_week = n() %>% na_if(0), .groups = "drop"
+  )
 
-# The number of patients with one of four lab values in the first two days around admission
-magic_pts_set <- obs_raw %>% 
-  filter(concept_code %in% fource_filter) %>%
-  filter(days_since_admission<2 & days_since_admission>-2) %>%
-  inner_join(demo_raw,by="patient_num") %>%
-  subset(select=c(patient_num,admission_date))
+pts_byweek <- pre_pts_byweek %>%
+  group_by(week) %>%
+  summarise(n_week = sum(n_week, na.rm = TRUE), .groups = "drop") %>%
+  mutate(label = "all", truedot = 0, falsedot = 0) %>%
+  bind_rows(pre_pts_byweek) %>%
+  mutate(
+    label = label %>% fct_recode(
+      "All patients" = "all",
+      "Kept patients" = "selected",
+      "Removed patients" = "diff"
+    ),
+    week_name = ymd("2020-01-01") + weeks(week)
+  )
+
+blurred_pts_byweek <- pts_byweek %>%
+  # Blur truedot/falsedota by just rounding up to bins the size of the threshold
+  mutate(
+    truedot = round_any(truedot, threshold) + 1,
+    falsedot = round_any(falsedot, threshold) + 1
+  ) %>%
+  blur_it("n_week", blur, threshold)
+
+# load('4CE_utils/data/MGB_admitfilterresults.rda')
+# pts_byweek = MGB_results$pts_byweek
 
 # 8/20/21 - USE THIS TO MAKE THE FILTER IS AN **AND** FILTER
+# 9/1/21 - WOULD NEED TO BE MODIFIED FOR THIS VERSION OF THE CODE
 # GET RID OF THE -1, I JUST DID THIS TO ALLOW 3/4 of the list
 # magic_pts_set <- obs_raw %>% filter(concept_code %in% fource_filter) %>% filter(days_since_admission<2 & days_since_admission>-2) %>% group_by(patient_num) %>% summarise(Unique_Filter_Codes=n_distinct(concept_code)) %>% filter(Unique_Filter_Codes>=length(fource_filter)-1) %>% 
 #     inner_join(demo_raw,by="patient_num") %>%
 #   subset(select=c(patient_num,admission_date))
-
-magic_pts_byweek <- magic_pts_set %>%
-  fn_summarize_byweek("selected")
-
-all_pts_byweek <- obs_raw %>% 
-  inner_join(demo_raw,by="patient_num") %>%
-  fn_summarize_byweek("all")
-
-pct_pts <- all_pts_byweek %>%
-  inner_join(magic_pts_byweek,by="week") %>% replace_na(list(n_week.x=0,n_week.y=0)) %>%  
-  mutate(pct = 100 - (n_week.y/n_week.x * 100)) %>% 
-  subset(select=c(week,pct)) %>%
-  rename(n_week=pct)
-#  
-# pct_pts_byweek <- all_pts_byweek %>% inner_join(magic_pts_byweek,by="week") %>% mutate(pct = 100 - n_week.y/n_week.x * 100) %>%
-#     mutate(label="percent")
-
-diff_pts_byweek <- all_pts_byweek %>% left_join(magic_pts_byweek,by="week") %>% mutate(n_week =  n_week.x-n_week.y) %>%
-subset(select=c(week,n_week)) %>%
-    mutate(label="diff")
-
-# Number of patients with validated chart_reviewed COVID by date
-# All negatives
-nocovid_pts_byweek <- icu_raw %>% 
-  inner_join(demo_raw,by="patient_num") %>%
-  filter(admitted_for_covid==0) %>%
-  fn_summarize_byweek("nocovid")
-
-# All positives
-covid_pts_byweek <- icu_raw %>% 
-  inner_join(demo_raw,by="patient_num") %>%
-  filter(admitted_for_covid==1) %>%
-  fn_summarize_byweek("covid") 
-
-# False positives
- covid_fp <- icu_raw %>% 
-  inner_join(magic_pts_set,by="patient_num") %>%
-  filter(admitted_for_covid==0) %>%
-  fn_summarize_byweek("covid_FP")
- 
- # True positives
-  covid_tp <- icu_raw %>% 
-  inner_join(magic_pts_set,by="patient_num") %>%
-  filter(admitted_for_covid==1) %>%
-  fn_summarize_byweek("covid_TP")
-  
-  # True negatives (all negative - false positive)
-  covid_tn <- nocovid_pts_byweek %>% left_join(covid_fp,by="week") %>% replace_na(list(n_week.x=0,n_week.y=0)) %>%  
-    mutate(n_week=n_week.x-n_week.y) %>% subset(select=c(week,n_week)) %>% mutate(label="covid_TN") %>%
-    mutate(n_week=na_if(n_week,0))
-  
-  # False negatives (all positive - true positive)
-  covid_fn <- covid_pts_byweek %>% left_join(covid_tp,by="week") %>%  replace_na(list(n_week.x=0,n_week.y=0)) %>%  
-    mutate(n_week=n_week.x-n_week.y) %>% subset(select=c(week,n_week)) %>% mutate(label="covid_FN") %>%
-  mutate(n_week=na_if(n_week,0))
-  
-  # # TP/P
-  # covid_pts_byweek %>% left_join(covid_tp,by="week") %>%
-  #  left_join(covid_fp,by="week") %>% replace_na(list(n_week.x=0,n_week.y=0)) %>% 
-  #  mutate(pct = n_week.y/(n_week.y+n_week))
-  # 
-  # This part below is weekly lines with dots for the graphs
-  
-  # Add all positives to allpts graph
-all_pts_byweek_size <- all_pts_byweek %>% 
-  left_join(covid_pts_byweek,by="week") %>%
-  rename(truedot=n_week.y,n_week=n_week.x,label=label.x)
-
-# Add TP to filtered pts graph
-magic_pts_byweek_size <- magic_pts_byweek %>% 
-  left_join(covid_tp,by="week") %>%
-  rename(truedot=n_week.y,n_week=n_week.x,label=label.x)
-
-# Add TN to difference graph 
-diff_pts_byweek_size <- diff_pts_byweek %>% 
-  left_join(covid_tn,by="week") %>%
-  rename(truedot=n_week.y,n_week=n_week.x,label=label.x) 
-
-# Add FP to filtered pts graph
-magic_pts_byweek_size <- magic_pts_byweek_size %>% 
-  left_join(covid_fp,by="week") %>%
-  rename(falsedot=n_week.y,n_week=n_week.x,label=label.x)
-
-# Add FN to difference graph 
-diff_pts_byweek_size <- diff_pts_byweek_size %>% 
-  left_join(covid_fn,by="week") %>%
-  rename(falsedot=n_week.y,n_week=n_week.x,label=label.x) 
-
-# Union, summarise 
-pts_byweek <- all_pts_byweek %>% union_all(diff_pts_byweek_size) %>% 
-  union_all(magic_pts_byweek_size) 
-pts_byweek <- pts_byweek %>% mutate(truedottype = ifelse(is.na(truedot), NA, "TRUE")) %>%
-  mutate(falsedottype = ifelse(is.na(falsedot),NA,"FALSE")) %>%
-   mutate(week_name=ymd("2020-01-01")+weeks(week))
 
 ```
 
@@ -259,49 +206,102 @@ This tells us summary stats on how many admissions are being removed and how wel
 
 ```{r}
 # Proportion of patients with special labs vs. all pts
-pct_alltime <- sum(magic_pts_byweek$n_week,na.rm=TRUE)/sum(all_pts_byweek$n_week,na.rm=TRUE)*100
+pct_alltime <- mean(pt_level_df$selected) * 100
+print(glue("Some stats on filter: {paste(fource_filter, collapse = ',')}"))
+print(glue("Percent of admissions removed by the filter: {round(pct_alltime,2)}%"))
+print(summary_stats, digits = 3)
+```
 
-print(paste("Some stats on filter:",paste(fource_filter,collapse=",")))
-print(paste("Percent of admissions removed by the filter:",pct_alltime))
+```{r}
+# # viz
+# # Reference I used for point shapes: http://www.sthda.com/english/wiki/ggplot2-point-shapes
+# # And colors: http://sape.inf.usi.ch/quick-reference/ggplot2/colour
+n1 <- pts_byweek %>%
+  group_by(label) %>%
+  summarise(sum_true = sum(truedot), sum_false = sum(falsedot))
+summary_stats <- unlist(PAR.fun(n1[3, 2], n1[3, 3], n1[2, 3], n1[2, 2]))
+```
 
-summary_stats <- PAR.fun(sum(covid_tp$n_week,na.rm=TRUE),sum(covid_fp$n_week,na.rm=TRUE),sum(covid_fn$n_week,na.rm=TRUE),sum(covid_tn$n_week,na.rm=TRUE))
+```{r}
+rug_df <- pts_byweek %>%
+  pivot_longer(cols = c(truedot, falsedot)) %>%
+  filter(!is.na(value)) %>%
+  select(week_name, label, name, value) %>%
+  uncount(weights = value) %>%
+  mutate(name = name %>% fct_recode(
+    "Correct" = "truedot",
+    "Incorrect" = "falsedot"
+  ))
 
-print(format(summary_stats,digits=3))
+point_df <- pts_byweek %>%
+  pivot_longer(cols = c(truedot, falsedot)) %>%
+  filter(!is.na(value)) %>%
+  mutate(name = name %>% fct_recode(
+    "Correct" = "truedot",
+    "Incorrect" = "falsedot"
+  ))
 
+annotate_df <- tibble(
+  label = names(summary_stats[1:2]) %>%
+    recode(
+      "sens" = "Sensitivity",
+      "spec" = "Specificity"
+    ),
+  summary_stats = summary_stats[1:2],
+  x = as.Date(c("2021-02-28", "2021-02-28")),
+  y = c(260, 250)
+) %>%
+  mutate(label = glue::glue("{label}: {round(summary_stats, 2)}"))
 ```
 
 
-
 ```{r}
-# viz 
-# Reference I used for point shapes: http://www.sthda.com/english/wiki/ggplot2-point-shapes
-# And colors: http://sape.inf.usi.ch/quick-reference/ggplot2/colour
-
-plot_filter <- function(df,label="") {
-
-# Build annotation  
-grob <- grid::grobTree(grid::textGrob(paste("Sens:",trunc(summary_stats[1]*100),",Spec:",trunc(summary_stats[2]*100)), x=0.5,  y=0.95, hjust=0,
-  gp=gpar(col="blue", fontsize=13, fontface="italic")))
-  
- ggplot() +
-  geom_line(data=df,aes(y=n_week,x=week_name,group=label,color=label,linetype=label))  +
-   geom_point(data=pts_byweek,alpha=0.5,aes(y=n_week,x=week_name,size=truedot,color=label,shape=truedottype)) + 
-   geom_point(data=pts_byweek,alpha=0.5,aes(y=n_week,x=week_name,size=falsedot,color=falsedottype,shape=falsedottype)) +
-   scale_shape_manual(values=c(19,19), guide=FALSE) + 
-   scale_color_manual(values=c("FALSE"="firebrick","TRUE"="darkolivegreen","all"="antiquewhite4","selected"="slateblue3","diff"="forestgreen"),guide=guide_legend(),labels=c("All pts","NOT selected","Misid'd","SELECTED")) +
-   scale_size(guide = guide_legend(title="Dot Size")) + 
-   theme(panel.background = element_rect(fill = "grey98")) +
-   ggtitle(paste("Patients removed by non-COVID-admission filter\n ")) +
-   labs(y="Number of admissions by week",x="Week (starting Jan 2020)",
-        caption=paste("Site:",currSiteId," ;  Filter:",paste(fource_filter,collapse=","),label)) +
-   annotation_custom(grob)
+plot_trend <- function(df, cap = "") {
+  df %>%
+    ggplot(aes(y = n_week, x = week_name)) +
+    geom_line(aes(alpha = label, linetype = label)) +
+    theme_classic() +
+    scale_linetype_manual(values = c(3, 2, 1)) +
+    scale_alpha_discrete(range = c(0.5, 1)) +
+    scale_color_brewer(palette = "Dark2", direction = -1) +
+    guides(linetype = FALSE, alpha = FALSE) +
+    scale_x_date(expand = expansion(c(0, 0), c(10, 90))) +
+    ggtitle(paste("Patients removed by non-COVID-admission filter\n ")) +
+    labs(
+      color = NULL, size = "Chart reviewed",
+      y = "Number of admissions by week", x = NULL,
+      caption = glue("Site: {currSiteId}
+                     Filter: {paste(fource_filter, collapse = ',')}
+                     {cap}")
+    ) +
+    directlabels::geom_dl(aes(label = label),
+      method = list(directlabels::dl.trans(x = x + .2), "last.bumpup")
+    ) +
+    theme(legend.position = "bottom") +
+    geom_text(data = annotate_df, aes(x = x, y = y, label = label))
 }
 
-plot_filter(pts_byweek)
+plot_rug <- function(df, cap = "") {
+  df %>%
+    plot_trend(cap) +
+    geom_rug(
+      data = rug_df,
+      aes(x = week_name, y = NA_real_, color = name, linetype = label),
+      position = "jitter"
+    )
+}
 
- pts_byweek %>% arrange(by=week)
- 
- pts_byweek %>% filter(!is.na(falsedot))
+plot_donut <- function(df, cap = "") {
+  df %>%
+    plot_trend(cap) +
+    geom_point(
+      data = point_df %>% filter(value > 0),
+      aes(y = n_week, x = week_name, size = value, color = name),
+      alpha = 0.8, shape = 21, stroke = 2
+    ) 
+}
+plot_donut(pts_byweek)
+plot_rug(pts_byweek)
 ```
  
 This shows all hospitalizations by week vs. hospitalizations by day with the filter applied ("selected"). 
@@ -316,28 +316,19 @@ Xs on the blue line are false positives - patients who were selected but the fil
 Xs on the green line are false negatives - patients that were not selected by the filter but are chart reviewed as admitted for COVID.
  
 ```{r}
-#Also plot the percentage removed by the filter
- ggplot(pct_pts,aes(y=n_week,x=week)) +
-  geom_line(color="blue") +
-  ggtitle("Percent of patients removed by the same filter")
+# Also plot the percentage removed by the filter
+# ggplot(pct_pts, aes(y = n_week, x = week)) +
+#   geom_line(color = "blue") +
+#   ggtitle("Percent of patients removed by the same filter")
 ```
 
-This shows the percentage of total patients seen each week that are excluded by the filter. Perhaps this is most informative, because (at MGB at least) it increases after the first wave of COVID (when hospitals were opening back up) even though the absolute number of COVID-positive hospitalizatins went down.
+This shows the percentage of total patients seen each week that are excluded by the filter. Perhaps this is most informative, because (at MGB at least) it increases after the first wave of COVID (when hospitals were opening back up) even though the absolute number of COVID-positive hospitalizations went down.
 
 
 ```{r}
-# Blur 
-
-# Blur truedot/falsedota by just rounding up to bins the size of the threshold
-pts_byweek <- pts_byweek %>% mutate(truedot=round_any(pts_byweek$truedot,threshold)+1)
-pts_byweek <- pts_byweek %>% mutate(falsedot=round_any(pts_byweek$falsedot,threshold)+1)
-
-# Blur
-pts_byweek_blur <- pts_byweek %>% blur_it("n_week",blur,threshold) %>% select(week,n_week,label,week_name,truedot,falsedot,truedottype,falsedottype) 
-
 # Plot blurred version
- plot_filter(pts_byweek_blur,"; Obfuscated")
-
+plot_donut(blurred_pts_byweek, "Obfuscated")
+plot_rug(blurred_pts_byweek, "Obfuscated")
 ```
 
 Here we blur and threshold the results and save them to the file /4ceData/out/[siteid]_admitfilterresults.rda. Although you do not need to share anything, feel free to share the obfuscated graph or the percentage graph on slack, and/or the file, which contains only the contents of these two graphs.
@@ -345,25 +336,25 @@ Here we blur and threshold the results and save them to the file /4ceData/out/[s
 ```{r}
 # Save Results and save the blurred version to /4ceData/out/[siteid]_admitfilterresults.rda
 # TODO : We don't save the counts in the summary stats because they're not blurred. We could blur them!
-results <- list(pts_byweek = pts_byweek_blur, pts_pct_byweek = pct_pts, summary_stats = summary_stats[1:5], pct_alltime = pct_alltime)
-site_results <- paste0(currSiteId, '_results')
+results <- list(
+  pts_byweek = blurred_pts_byweek,
+  # pts_pct_byweek = pct_pts,
+  summary_stats = summary_stats[1:5],
+  pct_alltime = pct_alltime
+)
+site_results <- paste0(currSiteId, "_results")
 assign(site_results, results)
-save(list=site_results, file=file.path("/4ceData/out",paste0(currSiteId,"_admitfilterresults.rda"))) 
+save(list = site_results, file = file.path("/4ceData/out", paste0(currSiteId, "_admitfilterresults.rda")))
 ```
-
 
 
 ```{r}
 # Testing playing with plotting the false positives
 # pts_byweek  <- nocovid_pts_byweek_filter
 # pts_byweek <- pts_byweek %>% mutate(week_name=ymd("2020-01-01")+weeks(week))
-# 
+#
 #  ggplot(pts_byweek,aes(y=n_week,x=week_name,group=label)) +
 #   geom_line(aes(color=label,linetype=label))  +
 #    ggtitle("Chart-reviewed patients removed by the hypothesized non-COVID-admission filter\n (by week)") +
 #    labs(y="Number of admissions by week",x="Week (starting Jan 2020)")
 ```
-
-
-
-
