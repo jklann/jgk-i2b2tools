@@ -42,6 +42,9 @@ library(directlabels)
 
 data_dir <- FourCePhase2.1Data::getInputDataDirectoryName()
 currSiteId <- FourCePhase2.1Data::getSiteId()
+  
+# 8/13/21 - jgk - set directory for 2.2 version if desired
+#data_dir <- '/4ceData_x2/4ceData_x2/Local/Input'
 
 fake_chart_review <- FALSE
 # SITES: SET THESE VALUES IF YOU PLAN TO SHARE YOUR RESULTS
@@ -77,11 +80,12 @@ demo_raw <-
   # Fix for datetimes (Oracle code?)
   mutate(admission_date = as_date(admission_date))
 
-# Optional - table with ICU and chart review flag data
-# This script two columns: patient_num (which is the patient_num from the 2.1 study cohort, not i2b2), and
-#  chart-review flag in a column called admitted_for_covid, which should be 1 if chart-reviewed as admitted for COVID,
-#  0 if chart-reviewed as not admitted for COVID, and null otherwise.
-# See steps 5a and 5b in https://github.com/jklann/jgk-i2b2tools/blob/master/4CE_utils/validation_computestats.sql
+# Optional - 
+# Load table with chart review flag data
+# This script must have at least three columns: 
+#    patient_num : the patient_num from the 2.1 study cohort, not necessarily i2b2
+#    admitted_for_covid : chart-reviewed admission flag, 1 if chart-reviewed as admitted for COVID, 0 if chart-reviewed as not admitted for COVID, and 2 for maybe.
+#    severe_covid : chart-reviewed severity flag, 1 if chart-reviewed severe illness, 0 if chart-reviewed non-severe illness, NULL otherwise
 
 if (fake_chart_review) { # fake number
   icu_raw <- tibble(
@@ -90,16 +94,16 @@ if (fake_chart_review) { # fake number
   )
 } else {
   icu_raw <- tibble(patient_num = "x", admitted_for_covid = NA)
-  if (file.exists(file.path(data_dir, "LocalPatientSeverityIcu.csv"))) {
+  if (file.exists(file.path(data_dir, "LocalPatientAdmissionChartReview.csv"))) {
     icu_raw <-
       readr::read_csv(
-        file.path(data_dir, "LocalPatientSeverityIcu.csv"),
+        file.path(data_dir, "LocalPatientAdmissionChartReview.csv.csv"),
         col_types = list(patient_num = readr::col_character())
       )
   }
 }
 ```
- 
+
 This part calculates stuff. If you've loaded icu_raw, calculate the number of patients with chart-reviewed COVID-admission or chart-reviewed non-COVID-admission
 
 ```{r}
@@ -188,6 +192,14 @@ blurred_pts_byweek <- pts_byweek %>%
 
 # load('4CE_utils/data/MGB_admitfilterresults.rda')
 # pts_byweek = MGB_results$pts_byweek
+
+# 8/20/21 - USE THIS TO MAKE THE FILTER IS AN **AND** FILTER
+# 9/1/21 - WOULD NEED TO BE MODIFIED FOR THIS VERSION OF THE CODE
+# GET RID OF THE -1, I JUST DID THIS TO ALLOW 3/4 of the list
+# magic_pts_set <- obs_raw %>% filter(concept_code %in% fource_filter) %>% filter(days_since_admission<2 & days_since_admission>-2) %>% group_by(patient_num) %>% summarise(Unique_Filter_Codes=n_distinct(concept_code)) %>% filter(Unique_Filter_Codes>=length(fource_filter)-1) %>% 
+#     inner_join(demo_raw,by="patient_num") %>%
+#   subset(select=c(patient_num,admission_date))
+
 ```
 
 This tells us summary stats on how many admissions are being removed and how well it performs compared to chart review. The percentage graph below shows this by week.
