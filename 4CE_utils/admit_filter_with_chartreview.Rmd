@@ -1,27 +1,39 @@
 ---
 title: "Visualize COVID-hospitalization filter, with chart-reviewed patients"
-output: html_notebook
+output:
+  html_document:
+    df_print: paged
 editor_options: 
-  chunk_output_type: console
+  chunk_output_type: inline
 ---
 
+
+editor_options:
+  chunk_output_type: console
+
+
 Written by Jeffrey Klann, PhD
-Last Updated 4/20/21
+With refactoring by Trang Le
+Last Updated 9/2/21
 
 This notebook will calculate the number of COVID hospitalizations by day and week when excluding patients who had a lab order for LDH, PaO2, PaCO2, or procalcitonin +/- 2 days around hospitalization, which is hypothesized (and shown on a small labeled dataset) to filter out most patients that have a hospitalization unrelated to COVID. This is only an exploratory analysis and this is not intended to be the final filter. That will come in time with chart review and machine learning.
 
-Now it includes the ability to visualize chart-reviewed patients on the graph, loaded in an optional file called LocalPatientSeverityIcu with two columns: a patient_num and an admitted_for_covid flag (True, False, or NA)
+It includes the ability to visualize chart-reviewed patients on the graph, loaded in an optional file called LocalPatientAdmissionChartReview.csv with three columns: a patient_num, an admitted_for_covid flag (0 for False, 1 for True, or 2 for Maybe), and optionally a severe_covid flag (0 for False, 1 for True). These flags are intended to be the result of a chart review.
 
 Also it is now very easy to configure the filter used by altering fource_filter below.
 
 To run this:
-1) Install the plyr package if needed - install.packages("plyr")
-2) Create the LocalPatientSeverityIcu.csv file if you would like to plot chart-reviewed points - see the comments near line 70
+1) Install the directlabels package if needed - install.packages("directlabels")
+2) Create the LocalPatientAdmissionChartReview.csv file if you would like to plot chart-reviewed points - see the comments near line 84
 3) Set your threshold and blur below. Site ID is gleaned from the R package.
+4) Configure your data directory below if it is not the one specified in the 4CE package (for example, if using 2.2 data - which incidentally seems to work fine with this script)
 4) Change your filter below if you would like.
 5) Run the code.
 
 Future improvement list:
+* Reimplement percentages?
+* Counts are slightly different in my April version of the code, but this version appears to have the correct total.
+    (TP is the same, FP is off by about 20...)
 * Blur/remove summary stats count
 * Do dots on percentage graph?
 
@@ -32,6 +44,9 @@ library(lubridate)
 library(grid)
 library(glue)
 library(directlabels)
+
+# This clears the global environment! Don't run this line if you need to keep your other variables around!
+rm(list=ls())
 
 # Get params from FourCePhase2.1Data
 # data_dir <- "../4ce/Input"
@@ -88,23 +103,23 @@ demo_raw <-
 #    severe_covid : chart-reviewed severity flag, 1 if chart-reviewed severe illness, 0 if chart-reviewed non-severe illness, NULL otherwise
 
 if (fake_chart_review) { # fake number
-  icu_raw <- tibble(
+  chart_raw <- tibble(
     patient_num = as.character(1:50),
     admitted_for_covid = c(rep(TRUE, 40), rep(FALSE, 10))
   )
 } else {
-  icu_raw <- tibble(patient_num = "x", admitted_for_covid = NA)
+  chart_raw <- tibble(patient_num = "x", admitted_for_covid = NA)
   if (file.exists(file.path(data_dir, "LocalPatientAdmissionChartReview.csv"))) {
-    icu_raw <-
+    chart_raw <-
       readr::read_csv(
-        file.path(data_dir, "LocalPatientAdmissionChartReview.csv.csv"),
+        file.path(data_dir, "LocalPatientAdmissionChartReview.csv"),
         col_types = list(patient_num = readr::col_character())
       )
   }
 }
 ```
 
-This part calculates stuff. If you've loaded icu_raw, calculate the number of patients with chart-reviewed COVID-admission or chart-reviewed non-COVID-admission
+This part calculates stuff. If you've loaded chart_raw, calculate the number of patients with chart-reviewed COVID-admission or chart-reviewed non-COVID-admission
 
 ```{r}
 round_any <- function(x, accuracy, f = round) {
@@ -151,11 +166,12 @@ PAR.fun <- function(n11, n10, n01, n00) {
 
 pt_level_df <- obs_raw %>%
   mutate(selected = concept_code %in% fource_filter & 
-           between(days_since_admission, -1, 1)) %>%
+           between(days_since_admission, -1, 1)) %>% 
   group_by(patient_num) %>%
   mutate(label = if_else(max(selected) == 1, "selected", "diff")) %>%
-  left_join(icu_raw, by = "patient_num") %>%
-  inner_join(select(demo_raw, patient_num, admission_date), by = "patient_num")
+  left_join(chart_raw, by = "patient_num") %>%
+  inner_join(select(demo_raw, patient_num, admission_date), by = "patient_num") %>%
+  group_by(patient_num) %>% arrange(days_since_admission) %>% filter(row_number()==1) # jgk 9-2-21, maybe helpful: variable # rows per patient seemed concerning
 
 pre_pts_byweek <- pt_level_df %>%
   select(label, patient_num, admission_date, admitted_for_covid) %>%
@@ -163,8 +179,8 @@ pre_pts_byweek <- pt_level_df %>%
   mutate(week = week(admission_date) + ((year(admission_date) - 2020) * 52)) %>%
   group_by(week, label) %>%
   summarise(
-    truedot = sum(admitted_for_covid, na.rm = TRUE),
-    falsedot = sum(!admitted_for_covid, na.rm = TRUE),
+    truedot = sum(subset(admitted_for_covid,admitted_for_covid<2), na.rm = TRUE), #jgk 9-2-21, handle maybes coded as 2
+    falsedot = sum(!subset(admitted_for_covid,admitted_for_covid<2), na.rm = TRUE),
     n_week = n() %>% na_if(0), .groups = "drop"
   )
 
@@ -205,6 +221,12 @@ blurred_pts_byweek <- pts_byweek %>%
 This tells us summary stats on how many admissions are being removed and how well it performs compared to chart review. The percentage graph below shows this by week.
 
 ```{r}
+# 2x2 table
+n1 <- pts_byweek %>%
+  group_by(label) %>%
+  summarise(sum_true = sum(truedot), sum_false = sum(falsedot))
+summary_stats <- unlist(PAR.fun(n1[3, 2], n1[3, 3], n1[2, 3], n1[2, 2]))
+
 # Proportion of patients with special labs vs. all pts
 pct_alltime <- mean(pt_level_df$selected) * 100
 print(glue("Some stats on filter: {paste(fource_filter, collapse = ',')}"))
@@ -213,16 +235,7 @@ print(summary_stats, digits = 3)
 ```
 
 ```{r}
-# # viz
-# # Reference I used for point shapes: http://www.sthda.com/english/wiki/ggplot2-point-shapes
-# # And colors: http://sape.inf.usi.ch/quick-reference/ggplot2/colour
-n1 <- pts_byweek %>%
-  group_by(label) %>%
-  summarise(sum_true = sum(truedot), sum_false = sum(falsedot))
-summary_stats <- unlist(PAR.fun(n1[3, 2], n1[3, 3], n1[2, 3], n1[2, 2]))
-```
-
-```{r}
+# Build some data frames for plotting
 rug_df <- pts_byweek %>%
   pivot_longer(cols = c(truedot, falsedot)) %>%
   filter(!is.na(value)) %>%
@@ -249,13 +262,17 @@ annotate_df <- tibble(
     ),
   summary_stats = summary_stats[1:2],
   x = as.Date(c("2021-02-28", "2021-02-28")),
-  y = c(260, 250)
+  y = c(275, 250)
 ) %>%
   mutate(label = glue::glue("{label}: {round(summary_stats, 2)}"))
 ```
 
 
 ```{r}
+# # Visualize
+# # Reference I used for point shapes: http://www.sthda.com/english/wiki/ggplot2-point-shapes
+# # And colors: http://sape.inf.usi.ch/quick-reference/ggplot2/colour
+
 plot_trend <- function(df, cap = "") {
   df %>%
     ggplot(aes(y = n_week, x = week_name)) +
@@ -307,13 +324,15 @@ plot_rug(pts_byweek)
 This shows all hospitalizations by week vs. hospitalizations by day with the filter applied ("selected"). 
 
 Lines:
-"ALL" hospitalizations includes only the hospitalizations in the COVID cohort, so all hospitalizations involve a COVID-positive test. A third line shows the difference between the two ("diff"), which is the number of hospitalizations excluded by the filter.
+All hospitalizations includes only the hospitalizations in the COVID cohort, so all hospitalizations involve a COVID-positive test. Kept patients are those selected by the filter, and Removed patients are those excluded by the filter.
 
 Dots:
-The blue dots are true positives – patients who were selected by the filter and were chart reviewed as admitted for covid. 
-The green dots are true negatives – patients who were not selected by the filter and were chart reviewed as not admitted for covid. 
-Xs on the blue line are false positives - patients who were selected but the filter but chart reviewed as not admitted for COVID. 
-Xs on the green line are false negatives - patients that were not selected by the filter but are chart reviewed as admitted for COVID.
+Green dots on the solid line are true positives – patients who were selected by the filter and were chart reviewed as admitted for covid. 
+Green dots on the dashed line are true negatives – patients who were not selected by the filter and were chart reviewed as not admitted for covid. 
+Orange dots on the solid line are false positives - patients who were selected but the filter but chart reviewed as not admitted for COVID. 
+Orange dots on the dashed line are false negatives - patients that were not selected by the filter but are chart reviewed as admitted for COVID.
+
+The rug plot substitutes lines below the graph for the dots.
  
 ```{r}
 # Also plot the percentage removed by the filter
