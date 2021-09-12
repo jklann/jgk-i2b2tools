@@ -46,7 +46,7 @@ library(glue)
 library(directlabels)
 
 # This clears the global environment! Don't run this line if you need to keep your other variables around!
-rm(list=ls())
+rm(list = ls())
 
 # Get params from FourCePhase2.1Data
 # data_dir <- "../4ce/Input"
@@ -57,9 +57,9 @@ rm(list=ls())
 
 data_dir <- FourCePhase2.1Data::getInputDataDirectoryName()
 currSiteId <- FourCePhase2.1Data::getSiteId()
-  
+
 # 8/13/21 - jgk - set directory for 2.2 version if desired
-#data_dir <- '/4ceData_x2/4ceData_x2/Local/Input'
+# data_dir <- '/4ceData_x2/4ceData_x2/Local/Input'
 
 fake_chart_review <- FALSE
 # SITES: SET THESE VALUES IF YOU PLAN TO SHARE YOUR RESULTS
@@ -70,7 +70,6 @@ blur <- 3
 # LDH, PaO2, PaCO2, or procalcitonin
 fource_filter <- c("33959-8", "2532-0", "2019-8", "2703-7")
 # fource_filter <- c('48065-7') # ddimer FEU
-
 ```
 
 ```{r}
@@ -95,16 +94,16 @@ demo_raw <-
   # Fix for datetimes (Oracle code?)
   mutate(admission_date = as_date(admission_date))
 
-# Optional - 
+# Optional -
 # Load table with chart review flag data
-# This script must have at least three columns: 
+# This script must have at least three columns:
 #    patient_num : the patient_num from the 2.1 study cohort, not necessarily i2b2
 #    admitted_for_covid : chart-reviewed admission flag, 1 if chart-reviewed as admitted for COVID, 0 if chart-reviewed as not admitted for COVID, and 2 for maybe.
 #    severe_covid : chart-reviewed severity flag, 1 if chart-reviewed severe illness, 0 if chart-reviewed non-severe illness, NULL otherwise
 
 if (fake_chart_review) { # fake number
   chart_raw <- tibble(
-    patient_num = as.character(1:50),
+    patient_num = as.character(demo_raw$patient_num[1:50]),
     admitted_for_covid = c(rep(TRUE, 40), rep(FALSE, 10))
   )
 } else {
@@ -165,22 +164,25 @@ PAR.fun <- function(n11, n10, n01, n00) {
 }
 
 pt_level_df <- obs_raw %>%
-  mutate(selected = concept_code %in% fource_filter & 
-           between(days_since_admission, -1, 1)) %>% 
+  mutate(selected = concept_code %in% fource_filter &
+    between(days_since_admission, -1, 1)) %>%
   group_by(patient_num) %>%
   mutate(label = if_else(max(selected) == 1, "selected", "diff")) %>%
+  ungroup() %>%
   left_join(chart_raw, by = "patient_num") %>%
   inner_join(select(demo_raw, patient_num, admission_date), by = "patient_num") %>%
-  group_by(patient_num) %>% arrange(days_since_admission) %>% filter(row_number()==1) # jgk 9-2-21, maybe helpful: variable # rows per patient seemed concerning
+  group_by(patient_num) %>%
+  arrange(days_since_admission) %>%
+  filter(row_number() == 1) %>% # jgk 9-2-21, maybe helpful: variable # rows per patient seemed concerning
+  ungroup()
 
 pre_pts_byweek <- pt_level_df %>%
   select(label, patient_num, admission_date, admitted_for_covid) %>%
   distinct() %>%
-  mutate(week = week(admission_date) + ((year(admission_date) - 2020) * 52)) %>%
-  group_by(week, label) %>%
+  group_by(week = week(admission_date) + ((year(admission_date) - 2020) * 52), label) %>%
   summarise(
-    truedot = sum(subset(admitted_for_covid,admitted_for_covid<2), na.rm = TRUE), #jgk 9-2-21, handle maybes coded as 2
-    falsedot = sum(!subset(admitted_for_covid,admitted_for_covid<2), na.rm = TRUE),
+    truedot = sum(admitted_for_covid, na.rm = TRUE), # jgk 9-2-21, handle maybes coded as 2
+    falsedot = sum(!admitted_for_covid, na.rm = TRUE),
     n_week = n() %>% na_if(0), .groups = "drop"
   )
 
@@ -212,10 +214,9 @@ blurred_pts_byweek <- pts_byweek %>%
 # 8/20/21 - USE THIS TO MAKE THE FILTER IS AN **AND** FILTER
 # 9/1/21 - WOULD NEED TO BE MODIFIED FOR THIS VERSION OF THE CODE
 # GET RID OF THE -1, I JUST DID THIS TO ALLOW 3/4 of the list
-# magic_pts_set <- obs_raw %>% filter(concept_code %in% fource_filter) %>% filter(days_since_admission<2 & days_since_admission>-2) %>% group_by(patient_num) %>% summarise(Unique_Filter_Codes=n_distinct(concept_code)) %>% filter(Unique_Filter_Codes>=length(fource_filter)-1) %>% 
+# magic_pts_set <- obs_raw %>% filter(concept_code %in% fource_filter) %>% filter(days_since_admission<2 & days_since_admission>-2) %>% group_by(patient_num) %>% summarise(Unique_Filter_Codes=n_distinct(concept_code)) %>% filter(Unique_Filter_Codes>=length(fource_filter)-1) %>%
 #     inner_join(demo_raw,by="patient_num") %>%
 #   subset(select=c(patient_num,admission_date))
-
 ```
 
 This tells us summary stats on how many admissions are being removed and how well it performs compared to chart review. The percentage graph below shows this by week.
@@ -224,7 +225,7 @@ This tells us summary stats on how many admissions are being removed and how wel
 # 2x2 table
 n1 <- pts_byweek %>%
   group_by(label) %>%
-  summarise(sum_true = sum(truedot), sum_false = sum(falsedot))
+  summarise(sum_true = sum(truedot), sum_false = sum(falsedot), .groups = "drop")
 summary_stats <- unlist(PAR.fun(n1[3, 2], n1[3, 3], n1[2, 3], n1[2, 2]))
 
 # Proportion of patients with special labs vs. all pts
@@ -315,7 +316,7 @@ plot_donut <- function(df, cap = "") {
       data = point_df %>% filter(value > 0),
       aes(y = n_week, x = week_name, size = value, color = name),
       alpha = 0.8, shape = 21, stroke = 2
-    ) 
+    )
 }
 plot_donut(pts_byweek)
 plot_rug(pts_byweek)
@@ -359,26 +360,30 @@ Here we blur and threshold the results and save them to the file /4ceData/out/[s
 pre_pts_byweek_nofilter <- pt_level_df %>%
   select(label, patient_num, admission_date, admitted_for_covid) %>%
   distinct() %>%
-  mutate(week = week(admission_date) + ((year(admission_date) - 2020) * 52)) %>%
-  group_by(week) %>%
+  group_by(week = week(admission_date) + ((year(admission_date) - 2020) * 52)) %>%
   summarise(
-    truedot = sum(subset(admitted_for_covid,admitted_for_covid<2), na.rm = TRUE), #jgk 9-2-21, handle maybes coded as 2
-    falsedot = sum(!subset(admitted_for_covid,admitted_for_covid<2), na.rm = TRUE),
+    truedot = sum(admitted_for_covid, na.rm = TRUE), # jgk 9-2-21, handle maybes coded as 2
+    falsedot = sum(!admitted_for_covid, na.rm = TRUE),
     n_week = n() %>% na_if(0), .groups = "drop"
   )
 
 pct_chart_admit <- pre_pts_byweek_nofilter %>%
-  mutate(pct = (truedot/(truedot+falsedot) * 100)) %>% drop_na() %>%
-  subset(select=c(week,pct)) %>%
-  rename(n_week=pct) %>% mutate(week_name=ymd("2020-01-01")+weeks(week))
+  mutate(pct = (truedot / (truedot + falsedot) * 100)) %>%
+  drop_na() %>%
+  transmute(week, n_week = pct, week_name = ymd("2020-01-01") + weeks(week))
 
-  # Plot % of chart-reviewed patients admitted for COVID, by week
-  ggplot(data=pct_chart_admit) +
-    geom_point(data=pct_chart_admit, aes(y=n_week,x=week_name,label="# Chart-reviewed")) +
-    geom_smooth(data=pct_chart_admit, aes(y=n_week,x=week_name,method="leoss")) +
-     ggtitle(paste("Percent of chart-reviewed 4CE patients actually admitted for COVID, by week\n ")) +
-   labs(y="Percent found to be admitted for COVID",x="Week (starting Jan 2020)") + 
-  scale_size(guide = guide_legend(title="Number chart-reviewed")) 
+# Plot % of chart-reviewed patients admitted for COVID, by week
+ggplot(data = pct_chart_admit, aes(y = n_week, x = week_name)) +
+  geom_point(label = "# Chart-reviewed") +
+  # depending on the data, geom_smooth may not make sense here
+  # geom_smooth(method = "loess") +
+  labs(
+    y = "Percent found to be admitted for COVID",
+    x = "Week (starting Jan 2020)",
+    title = "Percent of chart-reviewed 4CE patients actually admitted for COVID, by week"
+  ) +
+  theme_classic() +
+  scale_size(guide = guide_legend(title = "Number chart-reviewed"))
 ```
 
 ```{r}
