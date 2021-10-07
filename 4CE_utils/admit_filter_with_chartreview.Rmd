@@ -14,7 +14,7 @@ editor_options:
 
 Written by Jeffrey Klann, PhD
 With refactoring by Trang Le
-Last Updated 9/2/21
+Last Updated 10/7/21
 
 This notebook will calculate the number of COVID hospitalizations by day and week when excluding patients who had a lab order for LDH, PaO2, PaCO2, or procalcitonin +/- 2 days around hospitalization, which is hypothesized (and shown on a small labeled dataset) to filter out most patients that have a hospitalization unrelated to COVID. This is only an exploratory analysis and this is not intended to be the final filter. That will come in time with chart review and machine learning.
 
@@ -26,11 +26,13 @@ To run this:
 1) Install the directlabels package if needed - install.packages("directlabels")
 2) Create the LocalPatientAdmissionChartReview.csv file if you would like to plot chart-reviewed points - see the comments near line 84
 3) Set your threshold and blur below. Site ID is gleaned from the R package.
-4) Configure your data directory below if it is not the one specified in the 4CE package (for example, if using 2.2 data - which incidentally seems to work fine with this script)
-4) Change your filter below if you would like.
+4) Configure your data directory below if it is not the one specified in the 4CE package (for example, if using 2.2 data - which works fine with this script but you will need to uncomment the marked lines if you are using a file with multiple cohorts)
+4) Change your filter below if you would like, and select whether it is an AND or OR filter
 5) Run the code.
 
 Future improvement list:
+* Stats are a little bit different between data mining and plotting approaches.
+
 * Reimplement percentages?
 * Counts are slightly different in my April version of the code, but this version appears to have the correct total.
     (TP is the same, FP is off by about 20...)
@@ -51,7 +53,7 @@ rm(list=ls())
 # Get params from FourCePhase2.1Data
 # data_dir <- "../4ce/Input"
 # currSiteId <- "upenn"
-# fake_chart_review <- TRUE
+fake_chart_review <- FALSE
 # threshold <- 10
 # blur <- 0
 
@@ -59,7 +61,7 @@ data_dir <- FourCePhase2.1Data::getInputDataDirectoryName()
 currSiteId <- FourCePhase2.1Data::getSiteId()
   
 # 8/13/21 - jgk - set directory for 2.2 version if desired
-#data_dir <- '/4ceData_x2/4ceData_x2/Local/Input'
+data_dir <- '/4ceData_x2/4ceData_x2/Local/Input'
 
 fake_chart_review <- FALSE
 # SITES: SET THESE VALUES IF YOU PLAN TO SHARE YOUR RESULTS
@@ -68,8 +70,13 @@ blur <- 3
 
 # Also configurable: what filter will we use to do our analysis?
 # LDH, PaO2, PaCO2, or procalcitonin
-fource_filter <- c("33959-8", "2532-0", "2019-8", "2703-7")
+#fource_filter <- c("33959-8", "2532-0", "2019-8", "2703-7")
+fource_filter <- c("1988-5","2532-0","6598-7")
+# Procalcitonin, CRP, D-Dimer, Ferritin, LDH
+#fource_filter <- c("33959-8", "1988-5", "48066-5", "2276-4", "2532-0")
 # fource_filter <- c('48065-7') # ddimer FEU
+fource_filter_AND = FALSE # Make this an AND filter
+max_days_in_hospital = 4 # Number of hospital days to look at
 
 ```
 
@@ -80,18 +87,18 @@ clin_raw <-
   readr::read_csv(
     file.path(data_dir, "LocalPatientClinicalCourse.csv"),
     col_types = list(patient_num = readr::col_character())
-  )
+  ) # %>% filter (str_detect(cohort,"^PosAdm")) - UNCOMMENT FOR 2.2
 obs_raw <-
   readr::read_csv(
     file.path(data_dir, "LocalPatientObservations.csv"),
     col_types = list(patient_num = readr::col_character())
-  )
+  ) # %>% filter (str_detect(cohort,"^PosAdm")) - UNCOMMENT FOR 2.2
 demo_raw <-
   readr::read_csv(
     file.path(data_dir, "LocalPatientSummary.csv"),
     col_types = list(patient_num = readr::col_character()),
     na = c("1900-01-01", "1/1/1900")
-  ) %>%
+  )  %>% # filter (str_detect(cohort,"^PosAdm")) %>% - UNCOMMENT FOR 2.2
   # Fix for datetimes (Oracle code?)
   mutate(admission_date = as_date(admission_date))
 
@@ -104,9 +111,10 @@ demo_raw <-
 
 if (fake_chart_review) { # fake number
   chart_raw <- tibble(
-    patient_num = as.character(1:50),
+    patient_num = demo_raw[1:50,c('patient_num')], # as.character(1:50),
     admitted_for_covid = c(rep(TRUE, 40), rep(FALSE, 10))
   )
+  
 } else {
   chart_raw <- tibble(patient_num = "x", admitted_for_covid = NA)
   if (file.exists(file.path(data_dir, "LocalPatientAdmissionChartReview.csv"))) {
@@ -164,14 +172,35 @@ PAR.fun <- function(n11, n10, n01, n00) {
   res
 }
 
-pt_level_df <- obs_raw %>%
+# Compute total days in hospital by patient
+# 2.2 version - days_hosp <- clin_raw %>% filter(in_hospital==1) %>% group_by(patient_num) %>% summarise(cohort=cohort,days_in_hospital=max(days_since_admission),.groups='drop') %>% distinct()
+days_hosp <- clin_raw %>% filter(in_hospital==1) %>% group_by(patient_num) %>% summarise(days_in_hospital=max(days_since_admission),.groups='drop') %>% distinct()
+
+# Select patients that fit the filter
+# jgk 10/5/21 - user selected # of days in hospital, but limited to max days patient was in hospital
+pt_level_df <- obs_raw %>% inner_join(days_hosp,by="patient_num") %>%
   mutate(selected = concept_code %in% fource_filter & 
-           between(days_since_admission, -1, 1)) %>% 
+           between(days_since_admission, -1, max_days_in_hospital) & days_since_admission<days_in_hospital) %>% 
   group_by(patient_num) %>%
   mutate(label = if_else(max(selected) == 1, "selected", "diff")) %>%
   left_join(chart_raw, by = "patient_num") %>%
-  inner_join(select(demo_raw, patient_num, admission_date), by = "patient_num") %>%
-  group_by(patient_num) %>% arrange(days_since_admission) %>% filter(row_number()==1) # jgk 9-2-21, maybe helpful: variable # rows per patient seemed concerning
+  inner_join(select(demo_raw, patient_num, admission_date), by = "patient_num") 
+
+# jgk - for computing AND filter
+
+# number of elements in filter by patient
+set_size_df <- pt_level_df %>% group_by(patient_num) %>% filter(concept_code %in% fource_filter & 
+           between(days_since_admission, -1, max_days_in_hospital)) %>% select(patient_num,concept_code) %>% distinct_all() %>% arrange(patient_num,concept_code) %>% summarise(set_size=n_distinct(concept_code),.groups="drop")
+
+# Set label to "and" if entire filter is extant for pt, if fource_filter_AND is set
+if(fource_filter_AND==TRUE) {
+  pt_level_df$label="diff"  
+  pt_level_df <- pt_level_df %>% left_join(set_size_df,by="patient_num") %>%  mutate(set_size=ifelse(is.na(set_size),0,set_size)) %>%
+    mutate(label=if_else(set_size == length(fource_filter),'selected','diff'))
+}
+
+# jgk - shrink the set size to one row per pt - used for computing % hospitalizations removed by filter
+pt_level_onerow_df <- pt_level_df %>% group_by(patient_num) %>% arrange(days_since_admission) %>% filter(row_number()==1) %>% filter(admitted_for_covid<2) 
 
 pre_pts_byweek <- pt_level_df %>%
   select(label, patient_num, admission_date, admitted_for_covid) %>%
@@ -184,6 +213,9 @@ pre_pts_byweek <- pt_level_df %>%
     n_week = n() %>% na_if(0), .groups = "drop"
   )
 
+# Truedot = chart reviewed as admitted for covid
+# Falsedot = chart reviewed as not admitted for COVID
+# n_week = total # in this category (all, kept by filter, removed by filter)
 pts_byweek <- pre_pts_byweek %>%
   group_by(week) %>%
   summarise(n_week = sum(n_week, na.rm = TRUE), .groups = "drop") %>%
@@ -228,9 +260,10 @@ n1 <- pts_byweek %>%
 summary_stats <- unlist(PAR.fun(n1[3, 2], n1[3, 3], n1[2, 3], n1[2, 2]))
 
 # Proportion of patients with special labs vs. all pts
-pct_alltime <- mean(pt_level_df$selected) * 100
+pct_alltime <- mean(pt_level_onerow_df$label=="selected") * 100
 print(glue("Some stats on filter: {paste(fource_filter, collapse = ',')}"))
-print(glue("Percent of admissions removed by the filter: {round(pct_alltime,2)}%"))
+print(glue("Days in hospital / AND filter: {paste(max_days_in_hospital,'/',fource_filter_AND)}"))
+print(glue("Percent of admissions selected (kept) by the filter: {round(pct_alltime,2)}%"))
 print(summary_stats, digits = 3)
 ```
 
@@ -287,7 +320,7 @@ plot_trend <- function(df, cap = "") {
     labs(
       color = NULL, size = "Chart reviewed",
       y = "Number of admissions by week", x = NULL,
-      caption = glue("Site: {currSiteId}
+      caption = glue("Site: {currSiteId}, ANDed? {fource_filter_AND}
                      Filter: {paste(fource_filter, collapse = ',')}
                      {cap}")
     ) +
@@ -374,7 +407,7 @@ pct_chart_admit <- pre_pts_byweek_nofilter %>%
 
   # Plot % of chart-reviewed patients admitted for COVID, by week
   ggplot(data=pct_chart_admit) +
-    geom_point(data=pct_chart_admit, aes(y=n_week,x=week_name,label="# Chart-reviewed")) +
+    #geom_point(data=pct_chart_admit, aes(y=n_week,x=week_name,label="# Chart-reviewed")) +
     geom_smooth(data=pct_chart_admit, aes(y=n_week,x=week_name,method="leoss")) +
      ggtitle(paste("Percent of chart-reviewed 4CE patients actually admitted for COVID, by week\n ")) +
    labs(y="Percent found to be admitted for COVID",x="Week (starting Jan 2020)") + 
