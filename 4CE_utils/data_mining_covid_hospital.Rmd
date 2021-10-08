@@ -1,0 +1,454 @@
+---
+title: "Data Mining COVID Hospitalizations"
+author: "Jeffrey Klann, PhD"
+date: "9/24/2021"
+output: html_document
+---
+
+Possible improvements:
+auto-pick best points
+
+# Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+library(grid)
+library(glue)
+library(directlabels)
+library(metafor) # As a reminder for generating Table 1
+
+# This clears the global environment! Don't run this line if you need to keep your other variables around!
+rm(list=ls())
+
+# Get params from FourCePhase2.1Data
+# data_dir <- "../4ce/Input"
+# currSiteId <- "upenn"
+fake_chart_review <- FALSE
+# threshold <- 10
+# blur <- 0
+
+data_dir <- FourCePhase2.1Data::getInputDataDirectoryName()
+currSiteId <- FourCePhase2.1Data::getSiteId()
+  
+# Set directory for 2.2 version if desired
+data_dir <- '/4ceData_x2/4ceData_x2/Local/Input'
+
+```
+
+# Load the data
+
+```{r}
+CurrSiteId <- toupper(currSiteId)
+# Load the data
+clin_raw <-
+  readr::read_csv(
+    file.path(data_dir, "LocalPatientClinicalCourse.csv"),
+    col_types = list(patient_num = readr::col_character())
+  ) %>% filter (str_detect(cohort,"^PosAdm"))
+obs_raw <-
+  readr::read_csv(
+    file.path(data_dir, "LocalPatientObservations.csv"),
+    col_types = list(patient_num = readr::col_character())
+  ) %>% filter (str_detect(cohort,"^PosAdm"))
+demo_raw <-
+  readr::read_csv(
+    file.path(data_dir, "LocalPatientSummary.csv"),
+    col_types = list(patient_num = readr::col_character()),
+    na = c("1900-01-01", "1/1/1900")
+  ) %>% filter (str_detect(cohort,"^PosAdm")) %>%
+  # Fix for datetimes (Oracle code?)
+  mutate(admission_date = as_date(admission_date))
+
+# Optional - 
+# Load table with chart review flag data
+# This script must have at least three columns: 
+#    patient_num : the patient_num from the 2.1 study cohort, not necessarily i2b2
+#    admitted_for_covid : chart-reviewed admission flag, 1 if chart-reviewed as admitted for COVID, 0 if chart-reviewed as not admitted for COVID, and 2 for maybe.
+#    severe_covid : chart-reviewed severity flag, 1 if chart-reviewed severe illness, 0 if chart-reviewed non-severe illness, NULL otherwise
+
+if (fake_chart_review) { # fake number
+  chart_raw <- tibble(
+    patient_num = demo_raw[1:50,c('patient_num')], # as.character(1:50),
+    admitted_for_covid = c(rep(TRUE, 40), rep(FALSE, 10))
+  )
+  
+} else {
+  chart_raw <- tibble(patient_num = "x", admitted_for_covid = NA)
+  if (file.exists(file.path(data_dir, "LocalPatientAdmissionChartReview.csv"))) {
+    chart_raw <-
+      readr::read_csv(
+        file.path(data_dir, "LocalPatientAdmissionChartReview.csv"),
+        col_types = list(patient_num = readr::col_character())
+      )
+  }
+}
+
+# 090921 - extra bonus file with lab names, for readability of results
+  lab_names <-
+    readr::read_csv(
+      file.path(data_dir, "LabNames.csv")
+    )
+```
+
+# Define helper functions
+
+```{r}
+round_any <- function(x, accuracy, f = round) {
+  f(x / accuracy) * accuracy
+}
+
+# Blurring function from Trang. Thanks Trang!
+blur_it <- function(df, vars, blur_abs, mask_thres) {
+  # Obfuscate count values.
+  # If blurring range is +/-3, or blur_abs = 3,
+  # the count receive a small addition of a random number from -3 to 3.
+  # If a count is less than mask_thres, set that count to 0.
+
+  for (var in vars) {
+    var <- sym(var)
+    blur_vec <- sample(seq(-blur_abs, blur_abs), nrow(df), replace = TRUE)
+    df <- df %>%
+      mutate(
+        !!var := !!var + blur_vec,
+        !!var := ifelse(abs(!!var) < mask_thres, 0, !!var)
+      )
+  }
+  df
+}
+
+# Simple blurring function for a single value. Does the same thing as blur_it.
+blur_that <- function(value, blur_abs, mask_thres) {
+  as.integer(ifelse(value < mask_thres, 0, value + sample(seq(-blur_abs, blur_abs), 1)))
+}
+
+# Thanks Chuan Hong for this summary stats function!
+# Sensitivity: TP/(All Positive)
+# Variable names: first bit is test pos/neg, second bit is truth pos/neg
+PAR.fun <- function(n11, n10, n01, n00) {
+  sens <- n11 / (n11 + n01)
+  spec <- n00 / (n10 + n00)
+  ppv <- n11 / (n10 + n11)
+  npv <- n00 / (n00 + n01)
+  fscore <- 2 * sens * ppv / (sens + ppv)
+  res <- c(c(sens, spec, ppv, npv, fscore, n11, n10, n01, n00))
+  names(res) <- c("sens", "spec", "ppv", "npv", "fscore", "TP", "FP", "FN", "TN")
+  res
+}
+
+```
+
+# Prepare the data for mining
+
+```{r}
+
+# Compute total days in hospital by patient
+days_hosp <- clin_raw %>% filter(in_hospital==1) %>% group_by(patient_num) %>% summarise(cohort=cohort,days_in_hospital=max(days_since_admission),.groups='drop') %>% distinct()
+
+# Data frame of all observations in first five hospital days (or max days in hospital) among all patients in chart review, 
+#  with a count of how many days it occurred (not the total count), along with admitted-for-covid flag
+#  Remove patients with COVID-maybe for now
+assoc_input_df <-obs_raw %>% inner_join(days_hosp,by="patient_num") %>%
+  filter(days_since_admission>-1 & days_since_admission<=days_in_hospital & days_since_admission<5) %>%
+  inner_join(chart_raw%>%select(patient_num,admitted_for_covid),by="patient_num") %>%
+  select(c(days_since_admission,concept_code, patient_num, admitted_for_covid,cohort.x)) %>% distinct_all() %>% 
+  group_by(patient_num,concept_code) %>% 
+  summarise(concept_count = n(),admitted_for_covid=admitted_for_covid,cohort=cohort.x,.groups='drop') %>% 
+  filter(admitted_for_covid<2) %>% distinct_all()
+
+# Total number, from function above
+total_patient_set <-  assoc_input_df %>% select(c(patient_num)) %>% distinct() 
+total_ct <- total_patient_set %>% nrow() %>% first()
+
+# Patient sets of admitted_for_covid and not
+r_patient_set <- assoc_input_df %>% filter(admitted_for_covid==1) %>% select(patient_num) %>% distinct()
+notr_patient_set <- assoc_input_df %>% filter(admitted_for_covid==0) %>% select(patient_num) %>% distinct()
+
+# Initial set of features
+feature_list <- assoc_input_df %>% select(concept_code) %>% distinct_all()
+
+```
+
+# Define functions for association mining
+
+Loopy is the iterative version that is slower but more flexible. The other is a super-fast set theoretic version but only works on filters of size 1 right now.
+
+```{r}
+# assoc_input_df = data frame of all pts in the denominator
+# feature_list = a vector of concept_codes
+# size_of_combos = examine combinations of how many features (integers)
+# set_size = set to size_of_combos for AND, set to 1 for OR
+iterate_associations_loopy = function(assoc_input_df,feature_list,size_of_combos,set_size) {
+  starttime <- Sys.time()
+  i <- 0
+
+  # 092721
+  # left is test, right is truth
+
+  # Make an input df with only the set of concepts from the association rules
+  reduced_input_df <- assoc_input_df %>% filter(concept_code %in% feature_list) %>% distinct_all()
+
+  # Make a vector of combinations of output in list of features
+  combinations <- combn(feature_list,size_of_combos,simplify=FALSE)
+  
+  # Init tbl_out
+  tbl_out <- NA
+  
+  # Loop through all combinations and compute summary stats
+  #print(feature_list)
+  for(x in combinations) {
+    #print(x) 
+    
+    # Patient set that has both of these codes - for a combination x
+    l_patient_set <- reduced_input_df %>% filter(concept_code %in% x) %>% group_by(patient_num) %>% summarise(howmany=n()) %>% filter(howmany==set_size) %>% select (patient_num) # 1[?]
+    
+    # Compute (NOT l) and R - admitted for covid without code - 01
+    notlr_patient_set <- r_patient_set %>% filter(!patient_num %in% l_patient_set$patient_num) # 01
+    notlnotr_patient_num <- notr_patient_set %>% filter(!patient_num %in% l_patient_set$patient_num) # 00
+    
+    # Compute lr - patient count that are admitted for covid and have both concepts
+    lr_patient_set <- l_patient_set %>% inner_join(assoc_input_df,by="patient_num") %>% filter(admitted_for_covid==1) %>% select(patient_num) %>% distinct() #11
+    
+    lnotr_count <- length(l_patient_set$patient_num) - length(lr_patient_set$patient_num) # 10
+    testfalse_count <- total_ct-length(l_patient_set$patient_num) # 0[?]
+    
+    # Counts 
+    #  PAR.fun = testtruth - n11, n10, n01, n00
+    stats <- PAR.fun(length(lr_patient_set$patient_num),lnotr_count,length(notlr_patient_set$patient_num),length(notlnotr_patient_num$patient_num))
+    confidence <- length(lr_patient_set$patient_num) / length(l_patient_set$patient_num)
+    support <- length(l_patient_set$patient_num) / total_ct
+    #print(support)
+    
+    # Save results as a tbl row
+    myrow <- as_tibble_row(c(combo=paste(x,collapse="|"),stats,conf=confidence,supp=support),.name_repair = "unique")
+    if(typeof(tbl_out)=="logical"){
+      tbl_out <- myrow
+    } else {
+      tbl_out <- bind_rows(tbl_out,myrow) # rows_insert(tbl_out,myrow)
+    }
+    
+    i<- i+1
+    if(i%%100==0) print(i)
+  }
+  print(Sys.time()-starttime)
+  return(tbl_out)
+}
+
+# Pass in a DF with admitted for covid flag, concept_code, and patient_num
+iterate_associations <- function(dfin) {
+
+  pct_admitted_covid <- dfin %>% filter(admitted_for_covid==1) %>% select(c(patient_num)) %>% distinct() %>% nrow() / 
+    dfin %>% filter(admitted_for_covid<2) %>% select(c(patient_num)) %>% distinct() %>% nrow()
+  
+  # Total number of patients (for denominator)
+  total_ct <-  dfin %>% select(c(patient_num)) %>% distinct() %>% nrow() %>% first()
+  
+  # P(admitted for covid|code)>.5, P(!admitted for covid|code)<.5, prevalence>50%
+  # Sum of pts by code: code&admitted for covid (lr), code & not admitted for covid (l!r)
+  # Add confidence: count(code & admitted for covid) / count(code) - in chart review
+  dfout <- dfin  %>% group_by(concept_code) %>% summarise(
+    lr_ct = sum(subset(admitted_for_covid,admitted_for_covid<2),na.rm = TRUE),
+    l_not_r_ct = sum(!subset(admitted_for_covid,admitted_for_covid<2), na.rm = TRUE),
+    l_ct = n() %>% na_if(0), .groups = "drop") %>%
+    mutate(confidence_calc=lr_ct/(l_ct),support_l=l_ct/total_ct) 
+    #filter(confidence_calc>0.8,support_l>0.10) %>%
+    #left_join(lab_names,by=c("concept_code"="fource_loinc")) #%>%
+  #select(c("concept_code","fource_lab_name", "confidence_calc", "support_l"))
+  
+  return(dfout)
+}
+```
+
+# Functions for the mining
+
+```{r} 
+
+# Function to replace lab codes with names using the add-on file loaded at the beginning
+lab_names_vec <- lab_names$fource_lab_name 
+names(lab_names_vec) <- lab_names$fource_loinc
+replace_lab_names <- function(df) {
+  for(i in 1:length(df)) {
+    df[i] <- str_replace_all(df[i],lab_names_vec)
+  }
+  return(df)
+}
+    
+# Performing the iterative rule mining, refining the feature set each time
+association_loop <- function(input_df,max_set_size,logical_and,min_support,min_sens,min_spec,min_ppv) {
+  # Use the super-fast set version to select initial features (it doesn't output in the right format)
+  quickout <- iterate_associations(input_df)
+  feature_list_short <- feature_list %>% filter(concept_code %in% (quickout %>% filter(support_l>min_support) %>% select(concept_code))$concept_code) 
+  output_df <- list()
+  
+  print(glue("Prepared for loop with {length(feature_list_short$concept_code)} features."))
+  for(i in 1:max_set_size) {
+    outout <- iterate_associations_loopy(assoc_input_df,feature_list_short$concept_code,i,ifelse(logical_and,i,1)) %>% filter(sens>min_sens,spec>min_spec,ppv>min_ppv,supp>min_support)
+    feature_list_short <- as_tibble(unlist(strsplit(outout$combo,"\\|"))) %>% distinct_all()
+    feature_list_short$concept_code <- feature_list_short$value
+    outout$combo_eng <- replace_lab_names(outout$combo)
+    outout$sens <- as.numeric(outout$sens)
+    outout$spec <- as.numeric(outout$spec)
+    output_df <- c(output_df,list(outout))
+    print(glue("Finished round {i} with {length(feature_list_short$concept_code)} remaining features..."))
+  }
+  return(output_df)
+}
+
+```
+
+# Run the mining and plot the output
+
+```{r}
+library(plotly)
+
+master_output<-bind_rows(association_loop(assoc_input_df,5,TRUE,0.1,0.5,0.2,0.1),.id="round")
+
+fig <- ggplot(master_output,aes(color=round,text=paste("PPV:",ppv,"\n",combo_eng,"\n",combo,"\nSupport:",supp),x=round(spec,2),y=round(sens,2))) + geom_point() +
+#  geom_point(data=round3,aes(text=paste("PPV:",ppv,"\n",combo_eng,"\n",combo,"\nSupport:",supp),x=round(spec,2),y=round(sens,2)),col="darkblue") +
+#  geom_point(data=round2,aes(text=paste(combo_eng,"\n",combo,"\nSupport:",supp),x=round(spec,2),y=round(sens,2)),col="lightblue") +
+#  geom_point(data=round1,aes(text=paste(combo_eng,"\n",combo,"\nSupport:",supp),x=round(spec,2),y=round(sens,2)),col="yellow") +
+  #scale_x_discrete(labels=c()) + scale_y_discrete(labels=c()) +
+  labs(title="Sensitivity vs. Specificity of Proxies for COVID-Admission", 
+       x = "Specificity", y="Sensitivity",fill="Size of Predictive Set") +
+  scale_x_reverse() + 
+  scale_color_brewer(palette="RdYlGn") 
+# See this for palettes: http://www.sthda.com/english/wiki/ggplot2-colors-how-to-change-colors-automatically-and-manually#change-colors-manually
+
+ggplotly(fig)
+
+
+```
+
+(EVERYTHING FROM HERE ON IS WORKSPACE)
+
+```{r, eval=FALSE, echo=FALSE}
+#install.packages("plotly")
+#install.packages("car")
+library(plotly)
+library(car)
+
+
+round2$combo_eng <- replace_lab_names(round2$combo)
+round1$combo_eng <- replace_lab_names(round1$combo)
+round3$combo_eng <- replace_lab_names(round3$combo)
+
+round3$sens = as.numeric(round3$sens)
+round2$sens = as.numeric(round2$sens)
+round1$sens = as.numeric(round1$sens)
+round3$spec = as.numeric(round3$spec)
+round2$spec = as.numeric(round2$spec)
+round1$spec = as.numeric(round1$spec)
+
+fig <- ggplot(NULL) + 
+  geom_point(data=round3,aes(text=paste("PPV:",ppv,"\n",combo_eng,"\n",combo,"\nSupport:",supp),x=round(spec,2),y=round(sens,2)),col="darkblue") +
+  geom_point(data=round2,aes(text=paste(combo_eng,"\n",combo,"\nSupport:",supp),x=round(spec,2),y=round(sens,2)),col="lightblue") +
+  geom_point(data=round1,aes(text=paste(combo_eng,"\n",combo,"\nSupport:",supp),x=round(spec,2),y=round(sens,2)),col="yellow") +
+  #scale_x_discrete(labels=c()) + scale_y_discrete(labels=c()) +
+  labs(title="Sensitivity vs. Specificity of Proxies for COVID-Admission", 
+       x = "Specificity", y="Sensitivity",fill="Size of Predictive Set")
+
+ggplotly(fig)
+
+```
+
+
+
+```{r, eval=FALSE, echo=FALSE}
+
+# PERFORM THE MINING!!! - Sets of three ANDED together, each round must maintain a sensitivity > 0.5, specificity > 0.5, support > 0.1
+
+# Use the super-fast set version to select initial features (it doesn't output in the right format)
+quickout <- iterate_associations(assoc_input_df)
+feature_list_short <- feature_list %>% filter(concept_code %in% (quickout %>% filter(support_l>0.1) %>% select(concept_code))$concept_code)
+
+# Slow iterative version - round 1,2,3
+outout <- iterate_associations_loopy(assoc_input_df,feature_list_short$concept_code,1,1)
+round1 <- outout %>% filter(sens>.5,spec>.2,ppv>0.1,supp>0.1)
+round2_unfiltered <- iterate_associations_loopy(assoc_input_df,round1$combo,2,2)
+round2 <- round2_unfiltered %>% filter(sens>.5,spec>.2,ppv>0.1,supp>0.1)
+features_round2 <- as_tibble(unlist(strsplit(round2$combo,"\\|"))) %>% distinct_all()
+# Note in round 3+, this considers ALL combinations of codes in the feature list, not just the ones considered in the output from the previous round (TODO probably)
+round3_unfiltered <- iterate_associations_loopy(assoc_input_df,features_round2$value,3,3)
+round3 <- round3_unfiltered %>% filter(sens>.5,spec>.2,ppv>0.8,supp>0.1)
+```
+
+
+````{r, eval=FALSE, echo=FALSE}
+# Run an iteration
+outout <- iterate_associations(assoc_input_df)
+
+# Make an input df with only the set of concepts from the association rules
+reduced_input_df <- assoc_input_df %>% filter(concept_code %in% outout$concept_code)
+
+# 092721
+# left is test, right is truth
+
+# Total number, from function above
+total_patient_set <-  assoc_input_df %>% select(c(patient_num)) %>% distinct() 
+total_ct <- total_patient_set %>% nrow() %>% first()
+
+# Patient sets of admitted_for_covid and not
+r_patient_set <- assoc_input_df %>% filter(admitted_for_covid==1) %>% select(patient_num) %>% distinct()
+notr_patient_set <- assoc_input_df %>% filter(admitted_for_covid==0) %>% select(patient_num) %>% distinct()
+
+# Make a vector of combinations of output in list of features
+combinations <- combn(outout$concept_code,2,simplify=FALSE)
+
+# Lots of dup rows for some reason
+reduced_input_df <- reduced_input_df %>% distinct_all()
+
+# Init tbl_out
+tbl_out <- NA
+
+# Loop through all combinations and compute summary stats
+for(x in combinations) {
+  print(x) 
+  
+  # Patient set that has both of these codes - for a combination x
+  l_patient_set <- reduced_input_df %>% filter(concept_code %in% x) %>% group_by(patient_num) %>% summarise(howmany=n()) %>% filter(howmany==2) %>% select (patient_num) # 1[?]
+  
+  # Compute (NOT l) and R - admitted for covid without code - 01
+  notlr_patient_set <- r_patient_set %>% filter(!patient_num %in% l_patient_set$patient_num) # 01
+  notlnotr_patient_num <- notr_patient_set %>% filter(!patient_num %in% l_patient_set$patient_num) # 00
+  
+  # Compute lr - patient count that are admitted for covid and have both concepts
+  lr_patient_set <- l_patient_set %>% inner_join(assoc_input_df,by="patient_num") %>% filter(admitted_for_covid==1) %>% select(patient_num) %>% distinct() #11
+  
+  lnotr_count <- length(l_patient_set$patient_num) - length(lr_patient_set$patient_num) # 10
+  testfalse_count <- total_ct-length(l_patient_set$patient_num) # 0[?]
+  
+  # Counts 
+  #  PAR.fun = testtruth - n11, n10, n01, n00
+  stats <- PAR.fun(length(lr_patient_set$patient_num),lnotr_count,length(notlr_patient_set$patient_num),length(notlnotr_patient_num$patient_num))
+  confidence <- length(lr_patient_set$patient_num) / length(l_patient_set$patient_num)
+  support <- length(l_patient_set$patient_num) / total_ct
+  print(support)
+  
+  # Save results as a tbl row
+  myrow <- as_tibble_row(c(combo=paste(x,collapse="|"),stats,conf=confidence,supp=support),.name_repair = "unique")
+  if(typeof(tbl_out)=="logical"){
+    tbl_out <- myrow
+  } else {
+    tbl_out <- bind_rows(tbl_out,myrow) # rows_insert(tbl_out,myrow)
+  }
+}
+
+```
+
+```{r, eval=FALSE, echo=FALSE}
+#Combinations order doesn't matter, permutations order does matter
+combn(outout$concept_code,2,simplify=FALSE)
+
+# Reference by name of item in vector
+stats[names(stats)=='sens']
+
+library(digest)
+
+as.vector(outout$concept_code)
+
+for(x in combinations) {
+  print(x)
+}
+```
+
