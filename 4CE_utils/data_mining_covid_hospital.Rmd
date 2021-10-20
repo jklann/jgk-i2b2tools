@@ -23,17 +23,23 @@ library(metafor) # As a reminder for generating Table 1
 rm(list=ls())
 
 # Get params from FourCePhase2.1Data
-# data_dir <- "../4ce/Input"
-# currSiteId <- "upenn"
+currSiteId <- "MGB"
 fake_chart_review <- FALSE
-# threshold <- 10
-# blur <- 0
-
 data_dir <- FourCePhase2.1Data::getInputDataDirectoryName()
 currSiteId <- FourCePhase2.1Data::getSiteId()
   
 # Set directory for 2.2 version if desired
-data_dir <- '/4ceData_x2/4ceData_x2/Local/Input'
+data_dir <- '/4ceData_x2/4ceData_x2/101321/'
+#data_dir <- '/4ceData_x2/4ceData_x2/Local/Input'
+
+# Code for testing
+hugefile <- '/4ceData_x2/4ceData_x2_allcohorts/090721/LocalPatientObservations.csv'
+huge_obs <-  readr::read_csv(
+    file.path(hugefile),
+    col_types = list(patient_num = readr::col_character())
+  ) %>% filter (str_detect(cohort,"^PosAdm"))
+
+ze  <- obs_raw %>% group_by(concept_code) %>% summarise(n=n()) %>% filter(n>1000)
 
 ```
 
@@ -191,6 +197,7 @@ iterate_associations_loopy = function(assoc_input_df,feature_list,size_of_combos
 
   # Make a vector of combinations of output in list of features
   combinations <- combn(feature_list,size_of_combos,simplify=FALSE)
+  print(length(combinations))
   
   # Init tbl_out
   tbl_out <- NA
@@ -201,7 +208,9 @@ iterate_associations_loopy = function(assoc_input_df,feature_list,size_of_combos
     #print(x) 
     
     # Patient set that has both of these codes - for a combination x
-    l_patient_set <- reduced_input_df %>% filter(concept_code %in% x) %>% group_by(patient_num) %>% summarise(howmany=n()) %>% filter(howmany==set_size) %>% select (patient_num) # 1[?]
+    # 10/15/21 - jgk - changed to inequality for howmany check. Must have at least (set size) and at most (size of combos). Needed for OR filters.
+    l_patient_set <- reduced_input_df %>% filter(concept_code %in% x) %>% group_by(patient_num) %>% summarise(howmany=n()) %>% 
+      filter(howmany>=set_size & howmany <=size_of_combos) %>% select (patient_num) # 1[?]
     
     # Compute (NOT l) and R - admitted for covid without code - 01
     notlr_patient_set <- r_patient_set %>% filter(!patient_num %in% l_patient_set$patient_num) # 01
@@ -275,10 +284,12 @@ replace_lab_names <- function(df) {
 }
     
 # Performing the iterative rule mining, refining the feature set each time
-association_loop <- function(input_df,max_set_size,logical_and,min_support,min_sens,min_spec,min_ppv) {
+association_loop <- function(input_df,max_set_size,logical_and,min_support,min_sens,min_spec,min_ppv,features) {
+  if(missing(features)) {
   # Use the super-fast set version to select initial features (it doesn't output in the right format)
-  quickout <- iterate_associations(input_df)
-  feature_list_short <- feature_list %>% filter(concept_code %in% (quickout %>% filter(support_l>min_support) %>% select(concept_code))$concept_code) 
+    quickout <- iterate_associations(input_df)
+    feature_list_short <- feature_list %>% filter(concept_code %in% (quickout %>% filter(support_l>min_support) %>% select(concept_code))$concept_code) 
+  } else { feature_list_short <- features }
   output_df <- list()
   
   print(glue("Prepared for loop with {length(feature_list_short$concept_code)} features."))
@@ -299,15 +310,46 @@ association_loop <- function(input_df,max_set_size,logical_and,min_support,min_s
 
 # Run the mining and plot the output
 
+## Experiment: select a few specific features
+```{r}
+baseline <- iterate_associations_loopy(assoc_input_df,c("covidpos"),1,1)
+master_output_or<-bind_rows(association_loop(assoc_input_df,3,FALSE,0.1,0.4,baseline$spec,0.1),.id="round")
+
+association_loop(assoc_input_df,3,FALSE,0,0,0,0,feature_list %>% filter(concept_code %in% c("48065-7","48066-5","2276-4","1988-5")))
+
+```
+
+## ORs
+
 ```{r}
 library(plotly)
 
-master_output<-bind_rows(association_loop(assoc_input_df,5,TRUE,0.1,0.5,0.2,0.1),.id="round")
+#(input_df,max_set_size,logical_and,min_support,min_sens,min_spec,min_ppv)
+master_output_or<-bind_rows(association_loop(assoc_input_df,2,FALSE,0.1,0.1,0.1,0.1),.id="round") # ORs of size <=2
+#master_output<-bind_rows(association_loop(assoc_input_df,4,TRUE,0.1,0.4,0.2,0.1),.id="round") # ANDs of size <=4
 
-fig <- ggplot(master_output,aes(color=round,text=paste("PPV:",ppv,"\n",combo_eng,"\n",combo,"\nSupport:",supp),x=round(spec,2),y=round(sens,2))) + geom_point() +
-#  geom_point(data=round3,aes(text=paste("PPV:",ppv,"\n",combo_eng,"\n",combo,"\nSupport:",supp),x=round(spec,2),y=round(sens,2)),col="darkblue") +
-#  geom_point(data=round2,aes(text=paste(combo_eng,"\n",combo,"\nSupport:",supp),x=round(spec,2),y=round(sens,2)),col="lightblue") +
-#  geom_point(data=round1,aes(text=paste(combo_eng,"\n",combo,"\nSupport:",supp),x=round(spec,2),y=round(sens,2)),col="yellow") +
+fig <- ggplot(master_output_or,aes(color=round,text=paste("PPV:",ppv,"\n",combo_eng,"\n",combo,"\nSupport:",supp),x=round(spec,2),y=round(sens,2))) + geom_point() +
+  #scale_x_discrete(labels=c()) + scale_y_discrete(labels=c()) +
+  labs(title="Sensitivity vs. Specificity of Proxies for COVID-Admission", 
+       x = "Specificity", y="Sensitivity",fill="Size of Predictive Set") +
+  scale_x_reverse() + 
+  scale_color_brewer(palette="RdYlGn") 
+# See this for palettes: http://www.sthda.com/english/wiki/ggplot2-colors-how-to-change-colors-automatically-and-manually#change-colors-manually
+
+ggplotly(fig)
+
+
+```
+
+## ANDs
+
+```{r}
+library(plotly)
+
+# max_set_size,logical_and,min_support,min_sens,min_spec,min_ppv
+master_output_and<-bind_rows(association_loop(assoc_input_df,4,TRUE,0.1,0.4,0.2,0.1),.id="round")
+
+fig <- ggplot(master_output_and,aes(color=round,text=paste("PPV:",ppv,"\n",combo_eng,"\n",combo,"\nSupport:",supp),x=round(spec,2),y=round(sens,2))) + geom_point() +
   #scale_x_discrete(labels=c()) + scale_y_discrete(labels=c()) +
   labs(title="Sensitivity vs. Specificity of Proxies for COVID-Admission", 
        x = "Specificity", y="Sensitivity",fill="Size of Predictive Set") +
@@ -350,6 +392,15 @@ fig <- ggplot(NULL) +
 
 ggplotly(fig)
 
+```
+```{r}
+results <- list(
+  master_output_or = master_output_or,
+  master_output_and = master_output_and
+)
+site_results <- paste0(currSiteId, "_dataminingresults")
+assign(site_results, results)
+save(list = site_results, file = file.path("/4ceData/out", paste0(currSiteId, "_dataminingresults.rda")))
 ```
 
 
