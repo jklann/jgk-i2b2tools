@@ -6,7 +6,25 @@ output: html_document
 ---
 
 Possible improvements:
-auto-pick best points
+* Calculate using three time intervals (1st wave, slump, 2nd wave)
+* auto-pick best points? 
+* Speed optimize when calculating suppot of full dataset
+
+# About
+This code will run an association rule mining to try to find a set of 4CE hospitalizations that predicts whether a patient is actually admitted for COVID disease, for
+all patients admitted with a COVID positive test. This requires both 4CE data (in 2.1 or 2.2 format) *and* chart reviews that are summarized in a file called
+LocalPatientAdmissionChartReview.csv.
+
+To run this code:
+1) Set your site ID, optionally data directory, and output directory.
+2) In the data directory, add LocalPatientAdmissionChartReview.csv. This file must have at least three columns: 
+  * patient_num : the patient_num from the 2.1 study cohort, not necessarily i2b2 
+  * admitted_for_covid : chart-reviewed admission flag, 1 if chart-reviewed as admitted for COVID, 0 if chart-reviewed as not admitted for COVID, and 2 for maybe.
+  * severe_covid : chart-reviewed severity flag, 1 if chart-reviewed severe illness, 0 if chart-reviewed non-severe illness, NULL otherwise 
+3) Put LabNames.csv (from the Github) into the data directory also.
+4) If running on 2.1 data (not 2.2), you will need to comment out all references to 'cohort'.
+5) Click the "knit" button in RStudio. This could take 20 minutes.
+6) Please share the output html and optionally the "[site]_dataminingresults.rda" file in the output directory.
 
 # Setup
 
@@ -29,17 +47,22 @@ data_dir <- FourCePhase2.1Data::getInputDataDirectoryName()
 currSiteId <- FourCePhase2.1Data::getSiteId()
   
 # Set directory for 2.2 version if desired
-data_dir <- '/4ceData_x2/4ceData_x2/101321/'
-#data_dir <- '/4ceData_x2/4ceData_x2/Local/Input'
+#data_dir <- '/4ceData_x2/4ceData_x2/101321/'
+data_dir <- '/4ceData_x2/4ceData_x2/Local/Input'
 
-# Code for testing
+# Set output directory for rda file
+out_dir <- "/4ceData/out"
+
+```
+
+```{r test data, eval=FALSE}
+# Code for testing showing most frequent observations. Do not run. 
 hugefile <- '/4ceData_x2/4ceData_x2_allcohorts/090721/LocalPatientObservations.csv'
 huge_obs <-  readr::read_csv(
     file.path(hugefile),
     col_types = list(patient_num = readr::col_character())
   ) %>% filter (str_detect(cohort,"^PosAdm"))
-
-ze  <- obs_raw %>% group_by(concept_code) %>% summarise(n=n()) %>% filter(n>1000)
+ze  <- huge_obs %>% group_by(concept_code) %>% summarise(n=n()) %>% filter(n>1000)
 
 ```
 
@@ -67,7 +90,6 @@ demo_raw <-
   # Fix for datetimes (Oracle code?)
   mutate(admission_date = as_date(admission_date))
 
-# Optional - 
 # Load table with chart review flag data
 # This script must have at least three columns: 
 #    patient_num : the patient_num from the 2.1 study cohort, not necessarily i2b2
@@ -163,9 +185,20 @@ assoc_input_df <-obs_raw %>% inner_join(days_hosp,by="patient_num") %>%
   summarise(concept_count = n(),admitted_for_covid=admitted_for_covid,cohort=cohort.x,.groups='drop') %>% 
   filter(admitted_for_covid<2) %>% distinct_all()
 
+# 10/20/21 - repeat this without chart review but keeping full data set (for computing full support)
+# important note - this keeps all values of admitted_for_covid including maybes
+# also, this counts all patient observations, not just those in the first n days after hosp
+assoc_input_df_full <-obs_raw %>% inner_join(days_hosp,by="patient_num") %>%
+  #filter(days_since_admission>-1 & days_since_admission<=days_in_hospital & days_since_admission<5) %>%
+  left_join(chart_raw%>%select(patient_num,admitted_for_covid),by="patient_num") %>%
+  select(c(days_since_admission,concept_code, patient_num, admitted_for_covid,cohort.x)) %>% distinct_all() %>% 
+  group_by(patient_num,concept_code) %>% 
+  summarise(concept_count = n(),admitted_for_covid=admitted_for_covid,cohort=cohort.x,.groups='drop') %>% distinct_all()
+
 # Total number, from function above
 total_patient_set <-  assoc_input_df %>% select(c(patient_num)) %>% distinct() 
 total_ct <- total_patient_set %>% nrow() %>% first()
+total_ct_full <- assoc_input_df_full %>% select(c(patient_num)) %>% distinct() %>% nrow() %>% first()
 
 # Patient sets of admitted_for_covid and not
 r_patient_set <- assoc_input_df %>% filter(admitted_for_covid==1) %>% select(patient_num) %>% distinct()
@@ -185,7 +218,9 @@ Loopy is the iterative version that is slower but more flexible. The other is a 
 # feature_list = a vector of concept_codes
 # size_of_combos = examine combinations of how many features (integers)
 # set_size = set to size_of_combos for AND, set to 1 for OR
-iterate_associations_loopy = function(assoc_input_df,feature_list,size_of_combos,set_size) {
+# assoc_input_df_full = data frame exactly like assoc_input_df but ALL pts with no chart review data
+# feature_list_groups = optional. Keep only features that are supersets of this set.
+iterate_associations_loopy = function(assoc_input_df,feature_list,size_of_combos,set_size,assoc_input_df_full,feature_list_groups) {
   starttime <- Sys.time()
   i <- 0
 
@@ -194,8 +229,22 @@ iterate_associations_loopy = function(assoc_input_df,feature_list,size_of_combos
 
   # Make an input df with only the set of concepts from the association rules
   reduced_input_df <- assoc_input_df %>% filter(concept_code %in% feature_list) %>% distinct_all()
+  reduced_input_df_full <- assoc_input_df_full %>% filter(concept_code %in% feature_list) %>% distinct_all()
 
   # Make a vector of combinations of output in list of features
+  # Either merge groups and feature list, or make all combinations of feature_list if feature_list_groups is NA 
+  # Also doesn't quite work
+  # if(!is.na(feature_list_groups)) {
+  #   combinations <- list()
+  #   for(x in feature_list) { 
+  #     for(y in feature_list_groups) {
+  #       if(x!=y) combinations<-append(combinations,c(x,y))
+  #     }
+  #   }
+  # 
+  # } else {
+  #   combinations <- as.data.frame(combn(feature_list,size_of_combos,simplify=FALSE))
+  # }
   combinations <- combn(feature_list,size_of_combos,simplify=FALSE)
   print(length(combinations))
   
@@ -204,12 +253,31 @@ iterate_associations_loopy = function(assoc_input_df,feature_list,size_of_combos
   
   # Loop through all combinations and compute summary stats
   #print(feature_list)
+  
+  # If feature_list_groups is specified, skip the combination if it is not a superset of any previous feature in feature_list_groups
   for(x in combinations) {
-    #print(x) 
+    
+    # Remove feature combinations not in the previous set. (Doesn't quite work.)
+    # #print(x)
+    # skip<-1
+    # #if(!missing(feature_list_groups)) {
+    #    for(y in feature_list_groups) {
+    #      y1=c(as.character(y[[1]]));
+    #      x1=c(as.character(x));
+    #      #print(paste0(x1,";;",y1))
+    #      if(x1 %in% y1) { print(paste0("Keeping",x)); skip<- 0; break;}
+    #    }
+    # #}
+    #if(skip==1) next
     
     # Patient set that has both of these codes - for a combination x
     # 10/15/21 - jgk - changed to inequality for howmany check. Must have at least (set size) and at most (size of combos). Needed for OR filters.
     l_patient_set <- reduced_input_df %>% filter(concept_code %in% x) %>% group_by(patient_num) %>% summarise(howmany=n()) %>% 
+      filter(howmany>=set_size & howmany <=size_of_combos) %>% select (patient_num) # 1[?]
+    
+    # Patient set that has filter codes *for entire data set*
+    # 10/20/21 - added this to compute support for entire data set
+    l_patient_set_full <- reduced_input_df_full %>% filter(concept_code %in% x) %>% group_by(patient_num) %>% summarise(howmany=n()) %>% 
       filter(howmany>=set_size & howmany <=size_of_combos) %>% select (patient_num) # 1[?]
     
     # Compute (NOT l) and R - admitted for covid without code - 01
@@ -227,16 +295,16 @@ iterate_associations_loopy = function(assoc_input_df,feature_list,size_of_combos
     stats <- PAR.fun(length(lr_patient_set$patient_num),lnotr_count,length(notlr_patient_set$patient_num),length(notlnotr_patient_num$patient_num))
     confidence <- length(lr_patient_set$patient_num) / length(l_patient_set$patient_num)
     support <- length(l_patient_set$patient_num) / total_ct
+    support_full <- length(l_patient_set_full$patient_num) / total_ct_full
     #print(support)
     
     # Save results as a tbl row
-    myrow <- as_tibble_row(c(combo=paste(x,collapse="|"),stats,conf=confidence,supp=support),.name_repair = "unique")
+    myrow <- as_tibble_row(c(combo=paste(x,collapse="|"),stats,conf=confidence,supp=support,supp_full=support_full),.name_repair = "unique")
     if(typeof(tbl_out)=="logical"){
       tbl_out <- myrow
     } else {
       tbl_out <- bind_rows(tbl_out,myrow) # rows_insert(tbl_out,myrow)
     }
-    
     i<- i+1
     if(i%%100==0) print(i)
   }
@@ -244,6 +312,7 @@ iterate_associations_loopy = function(assoc_input_df,feature_list,size_of_combos
   return(tbl_out)
 }
 
+# Fast version for size 1 outputs
 # Pass in a DF with admitted for covid flag, concept_code, and patient_num
 iterate_associations <- function(dfin) {
 
@@ -253,7 +322,6 @@ iterate_associations <- function(dfin) {
   # Total number of patients (for denominator)
   total_ct <-  dfin %>% select(c(patient_num)) %>% distinct() %>% nrow() %>% first()
   
-  # P(admitted for covid|code)>.5, P(!admitted for covid|code)<.5, prevalence>50%
   # Sum of pts by code: code&admitted for covid (lr), code & not admitted for covid (l!r)
   # Add confidence: count(code & admitted for covid) / count(code) - in chart review
   dfout <- dfin  %>% group_by(concept_code) %>% summarise(
@@ -261,6 +329,7 @@ iterate_associations <- function(dfin) {
     l_not_r_ct = sum(!subset(admitted_for_covid,admitted_for_covid<2), na.rm = TRUE),
     l_ct = n() %>% na_if(0), .groups = "drop") %>%
     mutate(confidence_calc=lr_ct/(l_ct),support_l=l_ct/total_ct) 
+    # P(admitted for covid|code)>.5, P(!admitted for covid|code)<.5, prevalence>50%
     #filter(confidence_calc>0.8,support_l>0.10) %>%
     #left_join(lab_names,by=c("concept_code"="fource_loinc")) #%>%
   #select(c("concept_code","fource_lab_name", "confidence_calc", "support_l"))
@@ -284,24 +353,29 @@ replace_lab_names <- function(df) {
 }
     
 # Performing the iterative rule mining, refining the feature set each time
-association_loop <- function(input_df,max_set_size,logical_and,min_support,min_sens,min_spec,min_ppv,features) {
+# Support is now calculated on the whole dataset
+association_loop <- function(input_df,input_df_full,max_set_size,logical_and,min_support,min_sens,min_spec,min_ppv,features) {
   if(missing(features)) {
   # Use the super-fast set version to select initial features (it doesn't output in the right format)
-    quickout <- iterate_associations(input_df)
+  # Uses the FULL dataset to compute support
+    quickout <- iterate_associations(input_df_full)
     feature_list_short <- feature_list %>% filter(concept_code %in% (quickout %>% filter(support_l>min_support) %>% select(concept_code))$concept_code) 
-  } else { feature_list_short <- features }
+    feature_list_groups <- feature_list_short
+    print(typeof(feature_list_short))
+  } else { feature_list_short <- features; feature_list_groups <- features }
   output_df <- list()
   
   print(glue("Prepared for loop with {length(feature_list_short$concept_code)} features."))
   for(i in 1:max_set_size) {
-    outout <- iterate_associations_loopy(assoc_input_df,feature_list_short$concept_code,i,ifelse(logical_and,i,1)) %>% filter(sens>min_sens,spec>min_spec,ppv>min_ppv,supp>min_support)
+    outout <- iterate_associations_loopy(assoc_input_df,feature_list_short$concept_code,i,ifelse(logical_and,i,1),assoc_input_df_full,feature_list_groups) %>% filter(sens>min_sens,spec>min_spec,ppv>min_ppv,supp_full>min_support)
     feature_list_short <- as_tibble(unlist(strsplit(outout$combo,"\\|"))) %>% distinct_all()
     feature_list_short$concept_code <- feature_list_short$value
+    feature_list_groups <- outout$combo
     outout$combo_eng <- replace_lab_names(outout$combo)
     outout$sens <- as.numeric(outout$sens)
     outout$spec <- as.numeric(outout$spec)
     output_df <- c(output_df,list(outout))
-    print(glue("Finished round {i} with {length(feature_list_short$concept_code)} remaining features..."))
+    print(glue("Finished round {i} with {length(feature_list_short$concept_code)} remaining features and {length(feature_list_groups)} combinations to add to..."))
   }
   return(output_df)
 }
@@ -311,22 +385,21 @@ association_loop <- function(input_df,max_set_size,logical_and,min_support,min_s
 # Run the mining and plot the output
 
 ## Experiment: select a few specific features
-```{r}
-baseline <- iterate_associations_loopy(assoc_input_df,c("covidpos"),1,1)
-master_output_or<-bind_rows(association_loop(assoc_input_df,3,FALSE,0.1,0.4,baseline$spec,0.1),.id="round")
+```{r, eval=FALSE}
+baseline <- iterate_associations_loopy(assoc_input_df,c("covidpos"),1,1,assoc_input_df_full)
+master_output_or<-bind_rows(association_loop(assoc_input_df,assoc_input_df_full,3,FALSE,0.1,0.4,baseline$spec,0.1),.id="round")
 
-association_loop(assoc_input_df,3,FALSE,0,0,0,0,feature_list %>% filter(concept_code %in% c("48065-7","48066-5","2276-4","1988-5")))
+association_loop(assoc_input_df,assoc_input_df_full,3,FALSE,0,0,0,0,feature_list %>% filter(concept_code %in% c("48065-7","48066-5","2276-4","1988-5")))
 
 ```
 
-## ORs
+## ORs - Sensitivity increases with set size, specificity decreases. Support (prevalence) increases with set size.
 
 ```{r}
 library(plotly)
 
 #(input_df,max_set_size,logical_and,min_support,min_sens,min_spec,min_ppv)
-master_output_or<-bind_rows(association_loop(assoc_input_df,2,FALSE,0.1,0.1,0.1,0.1),.id="round") # ORs of size <=2
-#master_output<-bind_rows(association_loop(assoc_input_df,4,TRUE,0.1,0.4,0.2,0.1),.id="round") # ANDs of size <=4
+master_output_or<-bind_rows(association_loop(assoc_input_df,assoc_input_df_full,3,FALSE,0.2,0.2,0.5,0.5),.id="round") # ORs of size <=2
 
 fig <- ggplot(master_output_or,aes(color=round,text=paste("PPV:",ppv,"\n",combo_eng,"\n",combo,"\nSupport:",supp),x=round(spec,2),y=round(sens,2))) + geom_point() +
   #scale_x_discrete(labels=c()) + scale_y_discrete(labels=c()) +
@@ -341,13 +414,13 @@ ggplotly(fig)
 
 ```
 
-## ANDs
+## Compute ANDs up to size 4. Specificity increases with set size, sensitivity decreases.
 
 ```{r}
 library(plotly)
 
 # max_set_size,logical_and,min_support,min_sens,min_spec,min_ppv
-master_output_and<-bind_rows(association_loop(assoc_input_df,4,TRUE,0.1,0.4,0.2,0.1),.id="round")
+master_output_and<-bind_rows(association_loop(assoc_input_df,assoc_input_df_full,4,TRUE,0.3,0.4,0.2,0.2),.id="round")
 
 fig <- ggplot(master_output_and,aes(color=round,text=paste("PPV:",ppv,"\n",combo_eng,"\n",combo,"\nSupport:",supp),x=round(spec,2),y=round(sens,2))) + geom_point() +
   #scale_x_discrete(labels=c()) + scale_y_discrete(labels=c()) +
@@ -360,6 +433,17 @@ fig <- ggplot(master_output_and,aes(color=round,text=paste("PPV:",ppv,"\n",combo
 ggplotly(fig)
 
 
+```
+# Save the results
+
+```{r}
+results <- list(
+  master_output_or = master_output_or,
+  master_output_and = master_output_and
+)
+site_results <- paste0(currSiteId, "_dataminingresults")
+assign(site_results, results)
+save(list = site_results, file = file.path(out_dir, paste0(currSiteId, "_dataminingresults.rda")))
 ```
 
 (EVERYTHING FROM HERE ON IS WORKSPACE)
@@ -393,15 +477,7 @@ fig <- ggplot(NULL) +
 ggplotly(fig)
 
 ```
-```{r}
-results <- list(
-  master_output_or = master_output_or,
-  master_output_and = master_output_and
-)
-site_results <- paste0(currSiteId, "_dataminingresults")
-assign(site_results, results)
-save(list = site_results, file = file.path("/4ceData/out", paste0(currSiteId, "_dataminingresults.rda")))
-```
+
 
 
 
