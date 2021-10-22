@@ -195,18 +195,21 @@ assoc_input_df_full <-obs_raw %>% inner_join(days_hosp,by="patient_num") %>%
   group_by(patient_num,concept_code) %>% 
   summarise(concept_count = n(),admitted_for_covid=admitted_for_covid,cohort=cohort.x,.groups='drop') %>% distinct_all()
 
-# Total number, from function above
-total_patient_set <-  assoc_input_df %>% select(c(patient_num)) %>% distinct() 
-total_ct <- total_patient_set %>% nrow() %>% first()
-total_ct_full <- assoc_input_df_full %>% select(c(patient_num)) %>% distinct() %>% nrow() %>% first()
-
-# Patient sets of admitted_for_covid and not
-r_patient_set <- assoc_input_df %>% filter(admitted_for_covid==1) %>% select(patient_num) %>% distinct()
-notr_patient_set <- assoc_input_df %>% filter(admitted_for_covid==0) %>% select(patient_num) %>% distinct()
-
-# Initial set of features
-feature_list <- assoc_input_df %>% select(concept_code) %>% distinct_all()
-
+# 10/22/21 - This is now a function so it can be rerun! (Compute totals of chart reviews once)
+prep_totals<-function(in_df,in_df_full) {
+  # Total number, from function above
+  total_patient_set <<-  in_df %>% select(c(patient_num)) %>% distinct() 
+  total_ct <<- total_patient_set %>% nrow() %>% first()
+  total_ct_full <<- in_df_full %>% select(c(patient_num)) %>% distinct() %>% nrow() %>% first()
+  
+  # Patient sets of admitted_for_covid and not
+  r_patient_set <<- in_df %>% filter(admitted_for_covid==1) %>% select(patient_num) %>% distinct()
+  notr_patient_set <<- in_df %>% filter(admitted_for_covid==0) %>% select(patient_num) %>% distinct()
+  
+  # Initial set of features
+  feature_list <<- in_df %>% select(concept_code) %>% distinct_all()
+}
+prep_totals(assoc_input_df,assoc_input_df_full)
 ```
 
 # Define functions for association mining
@@ -366,8 +369,9 @@ association_loop <- function(input_df,input_df_full,max_set_size,logical_and,min
   output_df <- list()
   
   print(glue("Prepared for loop with {length(feature_list_short$concept_code)} features."))
+  if(length(feature_list_short$concept_code)==0) return()
   for(i in 1:max_set_size) {
-    outout <- iterate_associations_loopy(assoc_input_df,feature_list_short$concept_code,i,ifelse(logical_and,i,1),assoc_input_df_full,feature_list_groups) %>% filter(sens>min_sens,spec>min_spec,ppv>min_ppv,supp_full>min_support)
+    outout <- iterate_associations_loopy(input_df,feature_list_short$concept_code,i,ifelse(logical_and,i,1),input_df_full,feature_list_groups) %>% filter(sens>min_sens,spec>min_spec,ppv>min_ppv,supp_full>min_support)
     feature_list_short <- as_tibble(unlist(strsplit(outout$combo,"\\|"))) %>% distinct_all()
     feature_list_short$concept_code <- feature_list_short$value
     feature_list_groups <- outout$combo
@@ -395,8 +399,10 @@ association_loop(assoc_input_df,assoc_input_df_full,3,FALSE,0,0,0,0,feature_list
 
 ## ORs - Sensitivity increases with set size, specificity decreases. Support (prevalence) increases with set size.
 
-```{r}
+```{r ComputeOR,results='asis'}
 library(plotly)
+
+prep_totals(assoc_input_df,assoc_input_df_full)
 
 #(input_df,max_set_size,logical_and,min_support,min_sens,min_spec,min_ppv)
 master_output_or<-bind_rows(association_loop(assoc_input_df,assoc_input_df_full,2,FALSE,0.2,0.1,0.5,0.75),.id="round") # ORs of size <=2
@@ -411,37 +417,47 @@ fig <- ggplot(master_output_or,aes(color=round,text=paste("PPV:",ppv,"\n",combo_
 
 ggplotly(fig)
 
-fig
-
 
 ```
 
 # This version splits things up by quarter for OR. Set to calculate sets of 1 for expediency.
 
-```{r}
+```{r ORbyQuarter,results='asis'}
 library(plotly)
 
-quarters <- list(c("PosAdm2020Q1","PosAdm2020Q2"),c("PosAdm2020Q3","PosAdm2020Q4"),c("PosAdm2021Q1","PosAdm2021Q2"),c("PosAdm2021Q3"))
-out_df <- list()
-out_fig <- list()
-i_count <- 0
-for(q in quarters){
-  print(paste0(q[1],",",q[2]))
-  i_count<-i_count+1
-  q_assindf <- assoc_input_df %>% filter(c(as.character(cohort))==q[1] | c(as.character(cohort))==q[2])
-  q_assindf_full <- assoc_input_df_full %>% filter(c(as.character(cohort))==q[1] | c(as.character(cohort))==q[2])
-  master_output_or_s<-bind_rows(association_loop(q_assindf,q_assindf_full,1,FALSE,0.2,0.2,0.5,0.5),.id="round") # ORs of size <=2
-  out_df<-append(out_df,c(list(master_output_or_s)))
+assoc_by_quarter <- function(f_loop) {
+  quarters <- list(c("PosAdm2020Q1","PosAdm2020Q2"),c("PosAdm2020Q3","PosAdm2020Q4"),c("PosAdm2021Q1","PosAdm2021Q2"),c("PosAdm2021Q3"))
+  out_df <- list()
+  out_fig <- list()
+  i_count <- 0
+  for(q in quarters){
+    print(paste0(q[1],",",q[2]))
+    i_count<-i_count+1
+    q_assindf <- assoc_input_df %>% filter(c(as.character(cohort))==q[1] | c(as.character(cohort))==q[2])
+    q_assindf_full <- assoc_input_df_full %>% filter(c(as.character(cohort))==q[1] | c(as.character(cohort))==q[2])
+    prep_totals(q_assindf,q_assindf_full)
+    
+    if(length(r_patient_set)==0) {
+      print(glue("No patients for quarters {q}"))
+    } else {
   
-  fig <- ggplot(master_output_or_s,aes(color=round,text=paste("plot#:",i_count,"\nPPV:",ppv,"\n",combo_eng,"\n",combo,"\nSupport:",supp),x=round(spec,2),y=round(sens,2))) + geom_point(position=position_jitter(h=0,w=0.1)) +
-  #scale_x_discrete(labels=c()) + scale_y_discrete(labels=c()) +
-  labs(title="Sensitivity vs. Specificity of Proxies for COVID-Admission", 
-       x = "Specificity", y="Sensitivity",fill="Size of Predictive Set") +
-  scale_x_reverse() + 
-  scale_color_brewer(palette="RdYlGn") 
-  out_fig<-append(out_fig,c(list(fig)))
+        master_output_or_s<-bind_rows(f_loop(q_assindf,q_assindf_full),.id="round") # ORs of size <=2
+        out_df<-append(out_df,c(list(master_output_or_s)))
+        
+        if(length(master_output_or_s)>0){
+          fig <- ggplot(master_output_or_s,aes(color=round,text=paste("plot#:",c(as.character(i_count)),"\nPPV:",ppv,"\n",combo_eng,"\n",combo,"\nSupport:",supp),x=round(spec,2),y=round(sens,2))) + geom_point(position=position_jitter(h=0,w=0.1)) +
+          #scale_x_discrete(labels=c()) + scale_y_discrete(labels=c()) +
+          labs(title="Sensitivity vs. Specificity of Proxies for COVID-Admission", 
+               x = "Specificity", y="Sensitivity",fill="Size of Predictive Set") +
+          scale_x_reverse() + 
+          scale_color_brewer(palette="RdYlGn") } else { fig<-ggplot()+geom_point()}
+        out_fig<-append(out_fig,c(list(fig)))
+    }
+  }
+  return(out_fig)
 }
 
+out_fig<-assoc_by_quarter(function(indf,indf_full) { return(association_loop(indf,indf_full,1,FALSE,0.2,0.2,0.5,0.5)) })
 subplot(out_fig[[1]],out_fig[[2]],out_fig[[3]],out_fig[[4]],nrows=2,margin=0.04) %>% style(showlegend=FALSE, traces = 2:5) #%>%
   # add_annotations(
   #   text = ~unique(quarters),
@@ -462,8 +478,10 @@ subplot(out_fig[[1]],out_fig[[2]],out_fig[[3]],out_fig[[4]],nrows=2,margin=0.04)
 
 ## Compute ANDs up to size 4. Specificity increases with set size, sensitivity decreases.
 
-```{r}
+```{r ComputeAND, results='asis'}
 library(plotly)
+
+prep_totals(assoc_input_df,assoc_input_df_full)
 
 # max_set_size,logical_and,min_support,min_sens,min_spec,min_ppv
 master_output_and<-bind_rows(association_loop(assoc_input_df,assoc_input_df_full,4,TRUE,0.3,0.4,0.2,0.2),.id="round")
@@ -483,37 +501,17 @@ ggplotly(fig)
 
 Now do it for smaller sets by half-year with AND
 
-```{r}
+```{r ANDbyQuarter,results='asis'}
 library(plotly)
 
-quarters <- list(c("PosAdm2020Q1","PosAdm2020Q2"),c("PosAdm2020Q3","PosAdm2020Q4"),c("PosAdm2021Q1","PosAdm2021Q2"),c("PosAdm2021Q3"))
-out_df_and <- list()
-out_fig_and <- list()
-i_count <- 0
-for(q in quarters){
-  print(paste0(q[1],",",q[2]))
-  i_count<-i_count+1
-  q_assindf <- assoc_input_df %>% filter(c(as.character(cohort))==q[1] | c(as.character(cohort))==q[2])
-  q_assindf_full <- assoc_input_df_full %>% filter(c(as.character(cohort))==q[1] | c(as.character(cohort))==q[2])
-  master_output_and_s<-bind_rows(association_loop(assoc_input_df,assoc_input_df_full,2,TRUE,0.3,0.4,0.2,0.2),.id="round")
-  out_df_and<-append(out_df,c(list(master_output_and_s)))
-  
-  fig <- ggplot(master_output_and_s,aes(color=round,text=paste("plot#:",i_count,"\nPPV:",ppv,"\n",combo_eng,"\n",combo,"\nSupport:",supp),x=round(spec,2),y=round(sens,2))) + geom_point(position=position_jitter(h=0,w=0.1)) +
-  #scale_x_discrete(labels=c()) + scale_y_discrete(labels=c()) +
-  labs(title="Sensitivity vs. Specificity of Proxies for COVID-Admission", 
-       x = "Specificity", y="Sensitivity",fill="Size of Predictive Set") +
-  scale_x_reverse() + 
-  scale_color_brewer(palette="RdYlGn") 
-  out_fig_and<-append(out_fig,c(list(fig)))
-}
-
-subplot(out_fig_and[[1]],out_fig_and[[2]],out_fig_and[[3]],out_fig_and[[4]],nrows=2,margin=0.04) %>% style(showlegend=FALSE, traces = 2:5)
+out_fig<-assoc_by_quarter(function(indf,indf_full) { return(association_loop(indf,indf_full,2,TRUE,0.3,0.4,0.2,0.2)) })
+subplot(out_fig[[1]],out_fig[[2]],out_fig[[3]],out_fig[[4]],nrows=2,margin=0.04) %>% style(showlegend=FALSE, traces = 2:5)
 ```
 
 
 # Save the results
 
-```{r}
+```{r Save,eval=FALSE}
 results <- list(
   master_output_or = master_output_or,
   master_output_and = master_output_and,
