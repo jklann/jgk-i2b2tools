@@ -6,17 +6,20 @@ output: html_document
 ---
 
 Possible improvements:
-* Calculate using three time intervals (1st wave, slump, 2nd wave)
+* Utilize NPV
+* Feature engineering?
 * auto-pick best points? 
-* Speed optimize when calculating suppot of full dataset
+* Speed optimize when calculating support of full dataset
 
 # About
 This code will run an association rule mining to try to find a set of 4CE hospitalizations that predicts whether a patient is actually admitted for COVID disease, for
 all patients admitted with a COVID positive test. This requires both 4CE data (in 2.1 or 2.2 format) *and* chart reviews that are summarized in a file called
 LocalPatientAdmissionChartReview.csv.
 
+Now also calculates by 6-month period and obfuscates tables in the Rmd file!
+
 To run this code:
-1) Set your site ID, optionally data directory, and output directory.
+1) Set your site ID, optionally data directory, output directory, blur and threshold values!
 2) In the data directory, add LocalPatientAdmissionChartReview.csv. This file must have at least three columns: 
   * patient_num : the patient_num from the 2.1 study cohort, not necessarily i2b2 
   * admitted_for_covid : chart-reviewed admission flag, 1 if chart-reviewed as admitted for COVID, 0 if chart-reviewed as not admitted for COVID, and 2 for maybe.
@@ -45,6 +48,10 @@ currSiteId <- "MGB"
 fake_chart_review <- FALSE
 data_dir <- FourCePhase2.1Data::getInputDataDirectoryName()
 currSiteId <- FourCePhase2.1Data::getSiteId()
+
+# SITES: SET THESE VALUES IF YOU PLAN TO SHARE YOUR RESULTS
+threshold <- 3
+blur <- 0
   
 # Set directory for 2.2 version if desired
 data_dir <- '/4ceData_x2/4ceData_x2/102121/'
@@ -128,6 +135,7 @@ round_any <- function(x, accuracy, f = round) {
 }
 
 # Blurring function from Trang. Thanks Trang!
+# 10/22/21 - now converts it to a numeric
 blur_it <- function(df, vars, blur_abs, mask_thres) {
   # Obfuscate count values.
   # If blurring range is +/-3, or blur_abs = 3,
@@ -139,8 +147,8 @@ blur_it <- function(df, vars, blur_abs, mask_thres) {
     blur_vec <- sample(seq(-blur_abs, blur_abs), nrow(df), replace = TRUE)
     df <- df %>%
       mutate(
-        !!var := !!var + blur_vec,
-        !!var := ifelse(abs(!!var) < mask_thres, 0, !!var)
+        !!var := as.numeric(!!var) + blur_vec,
+        !!var := ifelse(abs(as.numeric(!!var)) < mask_thres, 0, !!var)
       )
   }
   df
@@ -417,6 +425,9 @@ fig <- ggplot(master_output_or,aes(color=round,text=paste("PPV:",ppv,"\n",combo_
 
 ggplotly(fig)
 
+# OBFUSCATE
+master_output_or <- blur_it(master_output_or,c("TP","TN","FP","FN"),blur,threshold)
+
 
 ```
 
@@ -442,6 +453,7 @@ assoc_by_quarter <- function(f_loop) {
     } else {
   
         master_output_or_s<-bind_rows(f_loop(q_assindf,q_assindf_full),.id="round") # ORs of size <=2
+        master_output_or_s <- blur_it(master_output_or_s,c("TP","TN","FP","FN"),blur,threshold) # OBFUSCATE
         out_df<-append(out_df,c(list(master_output_or_s)))
         
         if(length(master_output_or_s)>0){
@@ -495,6 +507,8 @@ fig <- ggplot(master_output_and,aes(color=round,text=paste("PPV:",ppv,"\n",combo
 # See this for palettes: http://www.sthda.com/english/wiki/ggplot2-colors-how-to-change-colors-automatically-and-manually#change-colors-manually
 
 ggplotly(fig)
+
+master_output_and <- blur_it(master_output_and,c("TP","TN","FP","FN"),blur,threshold) # OBFUSCATE
 
 
 ```
