@@ -3,6 +3,8 @@ title: "Data Mining COVID Hospitalizations"
 author: "Jeffrey Klann, PhD"
 date: "9/24/2021"
 output: html_document
+editor_options: 
+  chunk_output_type: inline
 ---
 
 Possible improvements:
@@ -26,18 +28,23 @@ To run this code:
   * severe_covid : chart-reviewed severity flag, 1 if chart-reviewed severe illness, 0 if chart-reviewed non-severe illness, NULL otherwise 
 3) Put LabNames.csv (from the Github) into the data directory also.
 4) If running on 2.1 data (not 2.2), you will need to comment out all references to 'cohort'.
-5) Click the "knit" button in RStudio. This could take 20 minutes.
-6) Please share the output html and optionally the "[site]_dataminingresults.rda" file in the output directory.
+5) You might need to install the plotly package (run the first line of the code below that is commented out).
+6) Click the "knit" button in RStudio. This could take 20 minutes.
+7) Please share the output html and optionally the "[site]_dataminingresults.rda" file in the output directory.
 
 # Setup
 
 ```{r setup, include=FALSE}
+# You might need to install plotly the first time you run this:
+#install.packages("plotly")
+
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 library(lubridate)
 library(grid)
 library(glue)
 library(directlabels)
+library(plotly)
 library(metafor) # As a reminder for generating Table 1
 
 # This clears the global environment! Don't run this line if you need to keep your other variables around!
@@ -64,12 +71,12 @@ out_dir <- "/4ceData/out"
 
 ```{r test data, eval=FALSE}
 # Code for testing showing most frequent observations. Do not run. 
-hugefile <- '/4ceData_x2/4ceData_x2_allcohorts/090721/LocalPatientObservations.csv'
-huge_obs <-  readr::read_csv(
-    file.path(hugefile),
-    col_types = list(patient_num = readr::col_character())
-  ) %>% filter (str_detect(cohort,"^PosAdm"))
-ze  <- huge_obs %>% group_by(concept_code) %>% summarise(n=n()) %>% filter(n>1000)
+# hugefile <- '/4ceData_x2/4ceData_x2_allcohorts/090721/LocalPatientObservations.csv'
+# huge_obs <-  readr::read_csv(
+#     file.path(hugefile),
+#     col_types = list(patient_num = readr::col_character())
+#   ) %>% filter (str_detect(cohort,"^PosAdm"))
+# ze  <- huge_obs %>% group_by(concept_code) %>% summarise(n=n()) %>% filter(n>1000)
 
 ```
 
@@ -257,7 +264,7 @@ iterate_associations_loopy = function(assoc_input_df,feature_list,size_of_combos
   #   combinations <- as.data.frame(combn(feature_list,size_of_combos,simplify=FALSE))
   # }
   combinations <- combn(feature_list,size_of_combos,simplify=FALSE)
-  print(length(combinations))
+  message(glue("number combinations: {length(combinations)}"))
   
   # Init tbl_out
   tbl_out <- NA
@@ -317,9 +324,9 @@ iterate_associations_loopy = function(assoc_input_df,feature_list,size_of_combos
       tbl_out <- bind_rows(tbl_out,myrow) # rows_insert(tbl_out,myrow)
     }
     i<- i+1
-    if(i%%100==0) print(i)
+    if(i%%100==0) message(glue("Progress: {print(i)}"))
   }
-  print(Sys.time()-starttime)
+  message(Sys.time()-starttime)
   return(tbl_out)
 }
 
@@ -372,11 +379,10 @@ association_loop <- function(input_df,input_df_full,max_set_size,logical_and,min
     quickout <- iterate_associations(input_df_full)
     feature_list_short <- feature_list %>% filter(concept_code %in% (quickout %>% filter(support_l>min_support) %>% select(concept_code))$concept_code) 
     feature_list_groups <- feature_list_short
-    print(typeof(feature_list_short))
   } else { feature_list_short <- features; feature_list_groups <- features }
   output_df <- list()
   
-  print(glue("Prepared for loop with {length(feature_list_short$concept_code)} features."))
+  message(glue("Prepared for loop with {length(feature_list_short$concept_code)} features."))
   if(length(feature_list_short$concept_code)==0) return()
   for(i in 1:max_set_size) {
     outout <- iterate_associations_loopy(input_df,feature_list_short$concept_code,i,ifelse(logical_and,i,1),input_df_full,feature_list_groups) %>% filter(sens>min_sens,spec>min_spec,ppv>min_ppv,supp_full>min_support)
@@ -387,7 +393,7 @@ association_loop <- function(input_df,input_df_full,max_set_size,logical_and,min
     outout$sens <- as.numeric(outout$sens)
     outout$spec <- as.numeric(outout$spec)
     output_df <- c(output_df,list(outout))
-    print(glue("Finished round {i} with {length(feature_list_short$concept_code)} remaining features and {length(feature_list_groups)} combinations to add to..."))
+    message(glue("Finished round {i} with {length(feature_list_short$concept_code)} remaining features and {length(feature_list_groups)} combinations to add to..."))
   }
   return(output_df)
 }
@@ -408,8 +414,6 @@ association_loop(assoc_input_df,assoc_input_df_full,3,FALSE,0,0,0,0,feature_list
 ## ORs - Sensitivity increases with set size, specificity decreases. Support (prevalence) increases with set size.
 
 ```{r ComputeOR,results='asis'}
-library(plotly)
-
 prep_totals(assoc_input_df,assoc_input_df_full)
 
 #(input_df,max_set_size,logical_and,min_support,min_sens,min_spec,min_ppv)
@@ -434,29 +438,27 @@ master_output_or <- blur_it(master_output_or,c("TP","TN","FP","FN"),blur,thresho
 # This version splits things up by quarter for OR. Set to calculate sets of 1 for expediency.
 
 ```{r ORbyQuarter,results='asis'}
-library(plotly)
-
 assoc_by_quarter <- function(f_loop) {
   quarters <- list(c("PosAdm2020Q1","PosAdm2020Q2"),c("PosAdm2020Q3","PosAdm2020Q4"),c("PosAdm2021Q1","PosAdm2021Q2"),c("PosAdm2021Q3"))
   out_df <- list()
   out_fig <- list()
   i_count <- 0
   for(q in quarters){
-    print(paste0(q[1],",",q[2]))
+    message(paste0(q[1],",",q[2]))
     i_count<-i_count+1
     q_assindf <- assoc_input_df %>% filter(c(as.character(cohort))==q[1] | c(as.character(cohort))==q[2])
     q_assindf_full <- assoc_input_df_full %>% filter(c(as.character(cohort))==q[1] | c(as.character(cohort))==q[2])
     prep_totals(q_assindf,q_assindf_full)
     
     if(length(r_patient_set)==0) {
-      print(glue("No patients for quarters {q}"))
+      message(glue("No patients for quarters {q}"))
     } else {
   
         master_output_or_s<-bind_rows(f_loop(q_assindf,q_assindf_full),.id="round") # ORs of size <=2
-        master_output_or_s <- blur_it(master_output_or_s,c("TP","TN","FP","FN"),blur,threshold) # OBFUSCATE
-        out_df<-append(out_df,c(list(master_output_or_s)))
         
         if(length(master_output_or_s)>0){
+          master_output_or_s <- blur_it(master_output_or_s,c("TP","TN","FP","FN"),blur,threshold) # OBFUSCATE
+          out_df<-append(out_df,c(list(master_output_or_s)))
           fig <- ggplot(master_output_or_s,aes(color=round,text=paste("plot#:",c(as.character(i_count)),"\nPPV:",ppv,"\n",combo_eng,"\n",combo,"\nSupport:",supp),x=round(spec,2),y=round(sens,2))) + geom_point(position=position_jitter(h=0,w=0.1)) +
           #scale_x_discrete(labels=c()) + scale_y_discrete(labels=c()) +
           labs(title="Sensitivity vs. Specificity of Proxies for COVID-Admission", 
@@ -491,8 +493,6 @@ subplot(out_fig[[1]],out_fig[[2]],out_fig[[3]],out_fig[[4]],nrows=2,margin=0.04)
 ## Compute ANDs up to size 4. Specificity increases with set size, sensitivity decreases.
 
 ```{r ComputeAND, results='asis'}
-library(plotly)
-
 prep_totals(assoc_input_df,assoc_input_df_full)
 
 # max_set_size,logical_and,min_support,min_sens,min_spec,min_ppv
@@ -516,8 +516,6 @@ master_output_and <- blur_it(master_output_and,c("TP","TN","FP","FN"),blur,thres
 Now do it for smaller sets by half-year with AND
 
 ```{r ANDbyQuarter,results='asis'}
-library(plotly)
-
 out_fig<-assoc_by_quarter(function(indf,indf_full) { return(association_loop(indf,indf_full,2,TRUE,0.3,0.4,0.2,0.2)) })
 subplot(out_fig[[1]],out_fig[[2]],out_fig[[3]],out_fig[[4]],nrows=2,margin=0.04) %>% style(showlegend=FALSE, traces = 2:5)
 ```
@@ -540,8 +538,6 @@ save(list = site_results, file = file.path(out_dir, paste0(currSiteId, "_datamin
 (EVERYTHING FROM HERE ON IS WORKSPACE)
 
 ```{r, eval=FALSE, echo=FALSE}
-#install.packages("plotly")
-#install.packages("car")
 library(plotly)
 library(car)
 
