@@ -58,7 +58,7 @@ currSiteId <- FourCePhase2.1Data::getSiteId()
 
 # SITES: SET THESE VALUES IF YOU PLAN TO SHARE YOUR RESULTS
 threshold <- 3
-blur <- 3
+blur <- 0
   
 # Set directory for 2.2 version if desired
 data_dir <- '/4ceData_x2/4ceData_x2/102121/'
@@ -442,6 +442,7 @@ assoc_by_quarter <- function(f_loop) {
   quarters <- list(c("PosAdm2020Q1","PosAdm2020Q2"),c("PosAdm2020Q3","PosAdm2020Q4"),c("PosAdm2021Q1","PosAdm2021Q2"),c("PosAdm2021Q3"))
   out_df <- list()
   out_fig <- list()
+  out_labels <- NULL
   i_count <- 0
   for(q in quarters){
     message(paste0(q[1],",",q[2]))
@@ -465,13 +466,18 @@ assoc_by_quarter <- function(f_loop) {
                x = "Specificity", y="Sensitivity",fill="Size of Predictive Set") +
           scale_x_reverse() + 
           scale_color_brewer(palette="RdYlGn") } else { fig<-ggplot()+geom_point()}
-        out_fig<-append(out_fig,c(list(fig)))
+          out_fig<-append(out_fig,c(list(fig)))
+          if(length(out_df)>length(out_labels)) out_labels<-c(out_labels,paste0(q[1],",",q[2]))
     }
   }
-  return(out_fig)
+  print(out_labels)
+  names(out_df) <- out_labels
+  return(list(out_fig,out_df))
 }
 
-out_fig<-assoc_by_quarter(function(indf,indf_full) { return(association_loop(indf,indf_full,1,FALSE,0.2,0.2,0.5,0.5)) })
+out_df<-assoc_by_quarter(function(indf,indf_full) { return(association_loop(indf,indf_full,1,FALSE,0.2,0.2,0.5,0.5)) })
+out_fig<-out_df[[1]]
+out_or_quarter<-out_df[[2]]
 subplot(out_fig[[1]],out_fig[[2]],out_fig[[3]],out_fig[[4]],nrows=2,margin=0.04) %>% style(showlegend=FALSE, traces = 2:5) #%>%
   # add_annotations(
   #   text = ~unique(quarters),
@@ -516,7 +522,9 @@ master_output_and <- blur_it(master_output_and,c("TP","TN","FP","FN"),blur,thres
 Now do it for smaller sets by half-year with AND
 
 ```{r ANDbyQuarter,results='asis'}
-out_fig<-assoc_by_quarter(function(indf,indf_full) { return(association_loop(indf,indf_full,2,TRUE,0.3,0.4,0.2,0.2)) })
+out_df<-assoc_by_quarter(function(indf,indf_full) { return(association_loop(indf,indf_full,2,TRUE,0.3,0.4,0.2,0.2)) })
+out_fig<-out_df[[1]]
+out_and_quarter<-out_df[[2]]
 subplot(out_fig[[1]],out_fig[[2]],out_fig[[3]],out_fig[[4]],nrows=2,margin=0.04) %>% style(showlegend=FALSE, traces = 2:5)
 ```
 
@@ -527,8 +535,8 @@ subplot(out_fig[[1]],out_fig[[2]],out_fig[[3]],out_fig[[4]],nrows=2,margin=0.04)
 results <- list(
   master_output_or = master_output_or,
   master_output_and = master_output_and,
-  master_output_or_s = master_output_or_s,
-  master_output_and_s = master_output_and_s
+  master_output_or_s = out_or_quarter,
+  master_output_and_s = out_and_quarter
 )
 site_results <- paste0(currSiteId, "_dataminingresults")
 assign(site_results, results)
