@@ -58,7 +58,7 @@ currSiteId <- FourCePhase2.1Data::getSiteId()
 
 # SITES: SET THESE VALUES IF YOU PLAN TO SHARE YOUR RESULTS
 threshold <- 3
-blur <- 0
+blur <- 3
   
 # Set directory for 2.2 version if desired
 data_dir <- '/4ceData_x2/4ceData_x2/102121/'
@@ -324,7 +324,7 @@ iterate_associations_loopy = function(assoc_input_df,feature_list,size_of_combos
       tbl_out <- bind_rows(tbl_out,myrow) # rows_insert(tbl_out,myrow)
     }
     i<- i+1
-    if(i%%100==0) message(glue("Progress: {print(i)}"))
+    if(i%%100==0) message(glue("Progress: {i}"))
   }
   message(Sys.time()-starttime)
   return(tbl_out)
@@ -523,7 +523,7 @@ subplot(out_fig[[1]],out_fig[[2]],out_fig[[3]],out_fig[[4]],nrows=2,margin=0.04)
 
 # Save the results
 
-```{r Save,eval=FALSE}
+```{r Save}
 results <- list(
   master_output_or = master_output_or,
   master_output_and = master_output_and,
