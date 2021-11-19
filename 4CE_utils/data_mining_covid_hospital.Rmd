@@ -29,8 +29,17 @@ To run this code:
 3) Put LabNames.csv (from the Github) into the data directory also.
 4) If running on 2.1 data (not 2.2), you will need to comment out all references to 'cohort'.
 5) You might need to install the plotly package (run the first line of the code below that is commented out).
-6) Click the "knit" button in RStudio. This could take 20 minutes.
-7) Please share the output html and optionally the "[site]_dataminingresults.rda" file in the output directory.
+
+Full output:
+6a) Click the "knit" button in RStudio. This could take 20 minutes.
+7a) Please share the output html and optionally the "[site]_dataminingresults.rda" file in the output directory.
+
+Look at just the single-item predictors:
+6b) Run the chunks from the beginning only through ComputeSingles (click on line 440 to move the cursor there and then choose Run->Run All Chunks Above)
+7b) Please share the "[site]_singleminingresults.rda" file in the output directory.
+
+Output table of only summary statistics on single items:
+
 
 # Setup
 
@@ -82,7 +91,7 @@ out_dir <- "/4ceData/out"
 
 # Load the data
 
-```{r}
+```{r load}
 CurrSiteId <- toupper(currSiteId)
 # Load the data
 clin_raw <-
@@ -136,7 +145,7 @@ if (fake_chart_review) { # fake number
 
 # Define helper functions
 
-```{r}
+```{r helpers}
 round_any <- function(x, accuracy, f = round) {
   f(x / accuracy) * accuracy
 }
@@ -184,7 +193,7 @@ PAR.fun <- function(n11, n10, n01, n00) {
 
 # Prepare the data for mining
 
-```{r}
+```{r preparedata}
 
 # Compute total days in hospital by patient
 days_hosp <- clin_raw %>% filter(in_hospital==1) %>% group_by(patient_num) %>% summarise(cohort=cohort,days_in_hospital=max(days_since_admission),.groups='drop') %>% distinct()
@@ -231,7 +240,7 @@ prep_totals(assoc_input_df,assoc_input_df_full)
 
 Loopy is the iterative version that is slower but more flexible. The other is a super-fast set theoretic version but only works on filters of size 1 right now.
 
-```{r}
+```{r associationmethods}
 # assoc_input_df = data frame of all pts in the denominator
 # feature_list = a vector of concept_codes
 # size_of_combos = examine combinations of how many features (integers)
@@ -354,11 +363,6 @@ iterate_associations <- function(dfin) {
   
   return(dfout)
 }
-```
-
-# Functions for the mining
-
-```{r} 
 
 # Function to replace lab codes with names using the add-on file loaded at the beginning
 lab_names_vec <- lab_names$fource_lab_name 
@@ -400,14 +404,43 @@ association_loop <- function(input_df,input_df_full,max_set_size,logical_and,min
 
 ```
 
-# Run the mining and plot the output
+# ----------------------- Run the mining and plot the output starting here --------------- #
 
 ## Experiment: select a few specific features
 ```{r, eval=FALSE}
-baseline <- iterate_associations_loopy(assoc_input_df,c("covidpos"),1,1,assoc_input_df_full)
-master_output_or<-bind_rows(association_loop(assoc_input_df,assoc_input_df_full,3,FALSE,0.1,0.4,baseline$spec,0.1),.id="round")
+# baseline <- iterate_associations_loopy(assoc_input_df,c("covidpos"),1,1,assoc_input_df_full)
+# master_output_or<-bind_rows(association_loop(assoc_input_df,assoc_input_df_full,3,FALSE,0.1,0.4,baseline$spec,0.1),.id="round")
+# 
+# association_loop(assoc_input_df,assoc_input_df_full,3,FALSE,0,0,0,0,feature_list %>% filter(concept_code %in% c("48065-7","48066-5","2276-4","1988-5")))
 
-association_loop(assoc_input_df,assoc_input_df_full,3,FALSE,0,0,0,0,feature_list %>% filter(concept_code %in% c("48065-7","48066-5","2276-4","1988-5")))
+```
+
+Compute just the single-item predictors, but include ALL of them
+
+```{r ComputeSingles}
+
+# input_df,input_df_full,max_set_size,logical_and,min_support,min_sens,min_spec,min_ppv,features
+
+master_output_singles<-bind_rows(association_loop(assoc_input_df,assoc_input_df_full,1,FALSE,0,0,0,0),.id="round") # ALL SINGLES
+
+master_output_singles$scaled_supp_full = round(as.numeric(master_output_singles$supp_full)*10)
+singlesfig <- ggplot(master_output_singles,aes(color=as.factor(scaled_supp_full),text=paste("PPV:",ppv,"\n",combo_eng,"\n",combo,"\nSupport:",supp),x=round(spec,2),y=round(sens,2))) + geom_point(position=position_jitter(h=0,w=0.1)) +
+  #scale_x_discrete(labels=c()) + scale_y_discrete(labels=c()) +
+  labs(title="Sensitivity vs. Specificity of Single-Item Proxies for COVID-Admission", 
+       x = "Specificity", y="Sensitivity",fill="Size of Predictive Set") +
+  scale_x_reverse() + 
+  scale_color_brewer(palette="RdYlGn") 
+
+ggplotly(singlesfig)
+
+singleresults <- list(
+  master_output_singles = master_output_singles,
+  singlesfig = singlesfig
+)
+site_singleresults <- paste0(currSiteId, "_singleminingresults")
+assign(site_singleresults, singleresults)
+save(list = site_singleresults, file = file.path(out_dir, paste0(currSiteId, "_singleminingresults.rda")))
+
 
 ```
 
@@ -536,14 +569,15 @@ results <- list(
   master_output_or = master_output_or,
   master_output_and = master_output_and,
   master_output_or_s = out_or_quarter,
-  master_output_and_s = out_and_quarter
+  master_output_and_s = out_and_quarter, 
+  master_output_singles = master_output_singles
 )
 site_results <- paste0(currSiteId, "_dataminingresults")
 assign(site_results, results)
 save(list = site_results, file = file.path(out_dir, paste0(currSiteId, "_dataminingresults.rda")))
 ```
 
-(EVERYTHING FROM HERE ON IS WORKSPACE)
+(EVERYTHING FROM HERE ON IS WORKSPACE - DO NOT RUN THIS CODE)
 
 ```{r, eval=FALSE, echo=FALSE}
 library(plotly)
