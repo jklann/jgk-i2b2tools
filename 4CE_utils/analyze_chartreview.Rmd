@@ -32,7 +32,7 @@ data_dir <- FourCePhase2.1Data::getInputDataDirectoryName()
 
 # SITES: SET THESE VALUES IF YOU PLAN TO SHARE YOUR RESULTS
 threshold <- 3
-blur <- 3
+blur <- 0
   
 # Set directory for 2.2 version if desired
 data_dir <- '~/4ceData_x2/4ceData_x2/102121/'
