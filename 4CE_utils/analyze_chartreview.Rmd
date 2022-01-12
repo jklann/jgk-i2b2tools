@@ -1,0 +1,374 @@
+---
+title: "Analyze Chart Review"
+author: "Jeff Klann, PhD"
+date: "11/23/2021"
+output:
+  word_document: default
+  html_document: default
+---
+
+This code outputs the tables and figures for characterizing the chart reviews and some additional data mining figures.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Do this once only
+#install.packages("kableExtra")
+#install.packages("formattable")
+#install.packages("plotly")
+
+#library(kableExtra)
+library(tidyverse)
+#library(formattable)
+library(lubridate)
+library(ggplot2)
+#library(plotly)
+
+# Get params from FourCePhase2.1Data
+currSiteId <- "MGB"
+fake_chart_review <- FALSE
+data_dir <- FourCePhase2.1Data::getInputDataDirectoryName()
+#currSiteId <- FourCePhase2.1Data::getSiteId()
+
+# SITES: SET THESE VALUES IF YOU PLAN TO SHARE YOUR RESULTS
+threshold <- 3
+blur <- 3
+  
+# Set directory for 2.2 version if desired
+data_dir <- '~/4ceData_x2/4ceData_x2/102121/'
+#data_dir <- '/4ceData_x2/4ceData_x2/Local/Input'
+
+# Set output directory for rda file
+out_dir <- "~/4ceData_x2/output"
+
+obs_raw <-
+  readr::read_csv(
+    file.path(data_dir, "LocalPatientObservations.csv"),
+    col_types = list(patient_num = readr::col_character())
+  ) %>% filter (str_detect(cohort,"^PosAdm"))
+demo_raw <-
+  readr::read_csv(
+    file.path(data_dir, "LocalPatientSummary.csv"),
+    col_types = list(patient_num = readr::col_character()),
+    na = c("1900-01-01", "1/1/1900")
+  ) %>% filter (str_detect(cohort,"^PosAdm")) %>%
+  # Fix for datetimes (Oracle code?)
+  mutate(admission_date = as_date(admission_date))
+
+chart_raw <- tibble(patient_num = "x", admitted_for_covid = NA)
+if (file.exists(file.path(data_dir, "LocalPatientAdmissionChartReview.csv"))) {
+  chart_raw <-
+    readr::read_csv(
+      file.path(data_dir, "LocalPatientAdmissionChartReview.csv"),
+      col_types = list(patient_num = readr::col_character())
+    )
+}
+
+
+# extra bonus file with lab names, for readability of results
+lab_names <-
+  readr::read_csv(
+    file.path(data_dir, "LabNames.csv")
+  )
+
+# extra bonus file with lab names, for readability of results
+icd10_names <-
+  readr::read_csv(
+    file.path(data_dir, "ICD10Names.csv")
+  )
+    
+round_any <- function(x, accuracy, f = round) {
+  f(x / accuracy) * accuracy
+}
+
+# Blurring function from Trang. Thanks Trang!
+# 10/22/21 - now converts it to a numeric
+blur_it <- function(df, vars, blur_abs, mask_thres) {
+  # Obfuscate count values.
+  # If blurring range is +/-3, or blur_abs = 3,
+  # the count receive a small addition of a random number from -3 to 3.
+  # If a count is less than mask_thres, set that count to 0.
+
+  for (var in vars) {
+    var <- sym(var)
+    blur_vec <- sample(seq(-blur_abs, blur_abs), nrow(df), replace = TRUE)
+    df <- df %>%
+      mutate(
+        !!var := as.numeric(!!var) + blur_vec,
+        !!var := ifelse(abs(as.numeric(!!var)) < mask_thres, 0, !!var)
+      )
+  }
+  df
+}
+
+# Simple blurring function for a single value. Does the same thing as blur_it.
+blur_that <- function(value, blur_abs, mask_thres) {
+  as.integer(ifelse(value < mask_thres, 0, value + sample(seq(-blur_abs, blur_abs), 1)))
+}
+
+# Thanks Chuan Hong for this summary stats function!
+# Sensitivity: TP/(All Positive)
+# Variable names: first bit is test pos/neg, second bit is truth pos/neg
+PAR.fun <- function(n11, n10, n01, n00) {
+  sens <- n11 / (n11 + n01)
+  spec <- n00 / (n10 + n00)
+  ppv <- n11 / (n10 + n11)
+  npv <- n00 / (n00 + n01)
+  fscore <- 2 * sens * ppv / (sens + ppv)
+  res <- c(c(sens, spec, ppv, npv, fscore, n11, n10, n01, n00))
+  names(res) <- c("sens", "spec", "ppv", "npv", "fscore", "TP", "FP", "FN", "TN")
+  res
+}
+covidWeeks = demo_raw %>%
+  mutate(c_week=week(admission_date)+((year(admission_date)-2020)*52))
+covidMonths = demo_raw %>%
+  mutate(c_week=month(admission_date)+((year(admission_date)-2020)*52))
+
+# Count distinct patient_num by admission_date and then group and sum by week.
+# Also add a column label=dflabel. Sets zeros to NA.
+fn_summarize_byweek <- function(df,dflabel) 
+{
+  mydf <- df %>%
+  subset(select=c(patient_num,admission_date)) %>%
+  distinct() %>%
+  group_by(admission_date) %>%
+  count() %>%
+  mutate(week=week(admission_date)+((year(admission_date)-2020)*52)) %>%
+  group_by(week) %>% summarise(n_week = sum(n)) %>%
+  mutate(label=dflabel) %>%
+  mutate(n_week=na_if(n_week,0)) 
+  
+  # Bugfix, now makes all weeks present, fills empty weeks with NA
+  tibble(week = min(covidWeeks$c_week):max(covidWeeks$c_week)) %>% left_join(mydf,by='week')
+}
+
+# Count distinct patient_num by admission_date and then group and sum by week.
+# Also add a column label=dflabel. Sets zeros to NA.
+fn_summarize_bymonth <- function(df,dflabel) 
+{
+  mydf <- df %>%
+  subset(select=c(patient_num,admission_date)) %>%
+  distinct() %>%
+  group_by(admission_date) %>%
+  count() %>%
+  mutate(week=month(admission_date)+((year(admission_date)-2020)*12)) %>%
+  group_by(week) %>% summarise(n_week = sum(n)) %>%
+  mutate(label=dflabel) %>%
+  mutate(n_week=na_if(n_week,0)) 
+  
+  # Bugfix, now makes all weeks present, fills empty weeks with NA
+  tibble(week = min(covidMonths$c_week):max(covidMonths$c_week)) %>% left_join(mydf,by='week')
+}
+```
+
+```{r}
+# Make pretty tables with KableExtra https://cran.r-project.org/web/packages/kableExtra/vignettes/awesome_table_in_html.html
+# and https://renkun-ken.github.io/formattable/
+
+#TODO: Look at actualy diagnoses
+
+# Min/max chart review dates
+chart.dates <- chart_raw %>% inner_join(demo_raw,by="patient_num") %>% summarise(admit_low=min(admission_date),admit_high=max(admission_date))
+
+# Distribution across months
+chart.months <- chart_raw %>% inner_join(demo_raw,by="patient_num") %>% group_by(month = lubridate::floor_date(admission_date, "month")) %>%
+    summarize(summary_variable = n())
+
+# Blur
+chart.months <- blur_it(chart.months,c('summary_variable'),blur,threshold)
+
+
+```
+
+
+```{r criteriatable}
+# Make table of criteria
+criteria <- tibble(covidgroup=c(rep("COVID",5),rep("Possibly COVID",5),rep("Not COVID",4)),category=as.character(seq(1:14)),description=c("Respiratory insufficiency","Blood clot","Hemodynamic","Other symptomatic COVID","Not admitted for COVID but COVID disease nonetheless","Early labor","Liver dysfunction","Graft failure","Immune dysfunction","Other possible COVID","Trauma","Procedure","Full-term labor","Other not COVID"))
+
+# Distribution of chart review codes by label
+dist.bylabel = criteria %>% left_join(chart_raw,by=c("category"="chart_code")) %>% group_by(covidgroup)  %>% 
+  mutate(GroupTotal=scales::percent(n()/nrow(chart_raw))) %>% group_by(covidgroup,category) %>% 
+  summarise(GroupTotal = GroupTotal,Category=description,count=n(),total=nrow(chart_raw),percent=scales::percent(n()/nrow(chart_raw)),.groups="drop") %>% distinct_all()
+  
+# Add category totals
+dist.bylabel <- dist.bylabel %>% bind_rows(dist.bylabel %>%  select(covidgroup,GroupTotal) %>% distinct_all() %>% mutate(Category="ALL",category="~",chart_code=as.character('~'),percent=GroupTotal)) %>% arrange(covidgroup,category)
+
+# -- I commented this out so you don't need to install kableExtra --
+# TODO: Need to highlight ALL rows better. Maybe just change the color of the percent bar.
+# Create a nice looking table - This needs to be generated with aggregates across sites
+# Change percent to percent_formatted to get mini bar graph on percentages, but only available in HTML
+#dist.bylabel$percent_formatted = color_bar("lightgreen")(readr::parse_number(dist.bylabel$percent))
+#dist.bylabel %>% select(c(covidgroup,Category,percent_formatted)) %>% rename(COVID.Group=covidgroup,Percent=percent_formatted) %>% 
+#  kbl(escape = FALSE) %>% kable_classic("striped",html_font="Cambria",full_width=FALSE) %>% column_spec(1,bold=T) %>%
+#  column_spec(2, width="20em")%>% row_spec(c(1,7,12)) %>% #,background="lightgrey") %>%
+#  collapse_rows(columns=1,valign="top") %>% row_spec(0,bold=T) %>%
+#  add_indent(c(2,3,4,5,6,8,9,10,11,13,14,15,16,17))
+
+# Keep columns we plan to save later
+dist.bylabel <- dist.bylabel %>% select(covidgroup,category,Category,count,total,percent)
+dist.bylabel <- blur_it(dist.bylabel,c('count'),blur,threshold)
+```
+
+```{r}
+# Plot percent admitted-for-covid by MONTH
+# Note that the output variable is still called week but it is month, because I am lazy
+
+chart_all <- demo_raw %>%
+  inner_join(chart_raw,by="patient_num") %>%
+  fn_summarize_bymonth("chart_reviewed") %>% mutate(week_name=ymd("2020-01-01")+months(week))
+
+chart_admit_pos <- demo_raw %>%
+  inner_join(chart_raw,by="patient_num") %>%
+  filter(admitted_for_covid==1) %>%
+  fn_summarize_bymonth("chart_admitpos") %>% mutate(week_name=ymd("2020-01-01")+months(week))
+
+pct_chart_admit <- chart_all %>%
+  inner_join(chart_admit_pos,by="week") %>% drop_na() %>% #replace_na(list(n_week.x=0,n_week.y=0)) %>%  
+  mutate(pct = (n_week.y/n_week.x * 100)) %>% 
+  subset(select=c(week,pct,n_week.y,n_week.x)) %>%
+  rename(n_week=pct) %>% mutate(week_name=ymd("2020-01-01")+months(week))
+
+pct_chart_admit <- blur_it(pct_chart_admit,c("n_week.x","n_week.y"),blur,threshold)
+  
+  # Plot % of chart-reviewed patients admitted for COVID, by week
+  pct_plot <- ggplot(data=pct_chart_admit, aes(y=n_week,x=week_name)) +
+    geom_point(data=pct_chart_admit, aes(y=n_week,x=week_name,size=n_week.x)) +
+    geom_smooth(data=pct_chart_admit, aes(y=n_week,x=week_name,weight=n_week.x)) +
+     ggtitle(paste("Percent of chart-reviewed 4CE patients actually hospitalized for COVID, by month\n ")) +
+   labs(y="Percent found to be admitted for COVID",x="Month (starting in 2020)") + 
+  scale_size(guide = guide_legend(title="Number chart-reviewed")) 
+  
+  pct_plot
+  
+  # Plot # of chart-reviewed patients admitted for COVID, by week
+alladmits_byweek <- na.omit(demo_raw %>% fn_summarize_bymonth("admitpos") %>% 
+  mutate(week_name=ymd("2020-01-01")+months(week))) 
+
+alladmits_byweek <- alladmits_byweek %>% mutate(pct = (n_week/(alladmits_byweek %>% 
+  select(n_week) %>% max()) * 100)) %>% subset(select=c(week,week_name,pct,n_week)) 
+
+  pct_all_plot <- ggplot(data=pct_chart_admit, aes(y=n_week.y,x=week_name)) +
+    geom_point(data=pct_chart_admit, aes(y=n_week.y,x=week_name,size=n_week.x)) +
+    geom_smooth(data=pct_chart_admit, aes(y=n_week.y,x=week_name,weight=n_week.x)) +
+     ggtitle(paste("Percent of chart-reviewed 4CE patients actually hospitalized for COVID, by month\n ")) +
+   labs(y="Percent found to be admitted for COVID",x="Month (starting in 2020)") + 
+  scale_size(guide = guide_legend(title="Number chart-reviewed")) +   
+    geom_smooth(data=alladmits_byweek,aes(y=pct,x=week_name),color="red")
+  pct_all_plot
+  
+  alladmits_byweek <- blur_it(alladmits_byweek,c("n_week"),blur,threshold)
+  
+```
+
+```{r}
+chart_counts <- chart_raw %>% group_by(admitted_for_covid) %>% summarise(grouptotal=n())
+chart_counts <-  blur_it(chart_counts,c("grouptotal"),blur,threshold)
+
+# Plot of diagnoses for patients by chart_review category
+diags_chart <- chart_raw %>%
+  inner_join(obs_raw,by="patient_num") %>%
+  left_join(icd10_names,by="concept_code") %>%
+  inner_join(chart_counts,by="admitted_for_covid") %>%
+  filter(concept_type=='DIAG-ICD10' & days_since_admission>-1 & days_since_admission<2) %>%
+  select(c("concept_code","c_name","patient_num","admitted_for_covid","grouptotal")) %>% distinct_all() %>%
+  group_by(admitted_for_covid,concept_code) %>% summarise(ct = n(),concept_code=concept_code,c_name=c_name,percent=scales::percent(n()/grouptotal),.groups="drop") %>% distinct_all()
+
+diags_chart <-  blur_it(diags_chart,c("ct"),blur,threshold)
+
+# diags_chart %>% filter(admitted_for_covid==0) %>% arrange(desc(ct)) %>% head(10) %>% 
+#   rbind(diags_chart %>% filter(admitted_for_covid==1) %>% arrange(desc(ct)) %>% head(10)) %>%
+#   select(c(admitted_for_covid,c_name,percent)) %>% rename(COVID.Group=admitted_for_covid,Percent=percent,ICD10=c_name) %>% 
+#   kbl(escape = FALSE) %>% kable_classic("striped",html_font="Cambria",full_width=FALSE) %>% column_spec(1,bold=T) %>%
+#   column_spec(2, width="20em")%>% row_spec(c(1,7,12)) %>% #,background="lightgrey") %>%
+#   collapse_rows(columns=1,valign="top") %>% row_spec(0,bold=T) 
+
+# Left: top diags of those admitted for COVID, right: top diags of those not COVID-admitted
+
+diags_sxs <-
+  list(diags_chart %>%  filter(admitted_for_covid==1) %>% arrange(desc(ct)) %>% head(10) %>% select(c("c_name","percent")) %>% 
+         rename(Percent=percent,ICD10=c_name),
+       diags_chart %>% filter(admitted_for_covid==0) %>% arrange(desc(ct)) %>% head(10) %>%  select(c("c_name","percent")) %>%
+         rename(Percent=percent,ICD10=c_name))
+#kbl(diags_sxs) %>% kable_classic("striped",html_font="Cambria",full_width=FALSE) 
+diags_sxs 
+
+```
+
+```{r}
+# Plot percent admitted-for-covid by week
+
+# chart_all <- demo_raw %>%
+#   inner_join(chart_raw,by="patient_num") %>%
+#   fn_summarize_byweek("chart_reviewed") %>% mutate(week_name=ymd("2020-01-01")+weeks(week))
+# 
+# chart_admit_pos <- demo_raw %>%
+#   inner_join(chart_raw,by="patient_num") %>%
+#   filter(admitted_for_covid==1) %>%
+#   fn_summarize_byweek("chart_admitpos") %>% mutate(week_name=ymd("2020-01-01")+weeks(week))
+# 
+# pct_chart_admit <- chart_all %>%
+#   inner_join(chart_admit_pos,by="week") %>% drop_na() %>% #replace_na(list(n_week.x=0,n_week.y=0)) %>%  
+#   mutate(pct = (n_week.y/n_week.x * 100)) %>% 
+#   subset(select=c(week,pct,n_week.y,n_week.x)) %>%
+#   rename(n_week=pct) %>% mutate(week_name=ymd("2020-01-01")+weeks(week))
+# 
+#   # Plot % of chart-reviewed patients admitted for COVID, by week
+#   pct_plot <- ggplot(data=pct_chart_admit, aes(y=n_week,x=week_name)) +
+#     geom_point(data=pct_chart_admit, aes(y=n_week,x=week_name,size=n_week.x)) +
+#     geom_smooth(data=pct_chart_admit, aes(y=n_week,x=week_name,weight=n_week.x)) +
+#      ggtitle(paste("Percent of chart-reviewed 4CE patients actually hospitalized for COVID, by week\n ")) +
+#    labs(y="Percent found to be admitted for COVID",x="Week (starting in 2020)") + 
+#   scale_size(guide = guide_legend(title="Number chart-reviewed")) 
+# 
+#   ggplotly(pct_plot)
+```
+
+```{r}
+# WORK IN PROGRESS - so I commented it out
+
+# Trying to show value differences in inflammatory markers for admitted_for_covid vs. all
+
+# # Set up for a t-test. x=All Chart Reviewed, y=Admit-for_COVID-chart-reviewed
+# x <- chart_raw %>% inner_join(obs_raw,by="patient_num") %>% inner_join(lab_names,by=c("concept_code"="fource_loinc")) %>% filter(days_since_admission>-1 & days_since_admission<1) %>% group_by(patient_num) %>% summarise(admitted_for_covid=admitted_for_covid, patient_num=patient_num,concept_code=concept_code,value=max(value)) %>% filter(concept_code=='1742-6') %>% select(value)
+# y <- chart_raw %>% inner_join(obs_raw,by="patient_num") %>% inner_join(lab_names,by=c("concept_code"="fource_loinc")) %>% filter(days_since_admission>-1 & days_since_admission<1) %>% group_by(patient_num) %>% summarise(admitted_for_covid=admitted_for_covid, patient_num=patient_num,concept_code=concept_code,value=max(value)) %>% filter(concept_code=='1742-6' & admitted_for_covid==1) %>% select(value)
+# 
+# # Lab values on average grouped by chart review
+# chart_raw %>% inner_join(obs_raw,by="patient_num") %>% inner_join(lab_names,by=c("concept_code"="fource_loinc")) %>% filter(days_since_admission>-1 & days_since_admission<1) %>% group_by(patient_num) %>% summarise(admitted_for_covid=admitted_for_covid, patient_num=patient_num,concept_code=concept_code,value=max(value)) %>% group_by(concept_code,admitted_for_covid) %>% summarise(mean = mean(value),count=n())
+# 
+# # Not grouped by anything
+# chart_raw %>% inner_join(obs_raw,by="patient_num") %>% inner_join(lab_names,by=c("concept_code"="fource_loinc")) %>% filter(days_since_admission>-1 & days_since_admission<1) %>% group_by(patient_num) %>% summarise(patient_num=patient_num,concept_code=concept_code,value=max(value)) %>% group_by(concept_code) %>% summarise(mean = mean(value))
+# 
+# obs_raw %>% inner_join(lab_names,by=c("concept_code"="fource_loinc")) %>% filter(days_since_admission>-1 & days_since_admission<1) %>% group_by(concept_code) %>% summarise(mean = mean(value))
+
+```
+
+```{r save}
+# TODO: The counts are not blurred and thresholded yet. dist.bylabel needs it
+chartresults <- list(
+  chart.dates = chart.dates,
+  chart.months = chart.months,
+  dist.bylabel = dist.bylabel,
+  pct_chart_admit = pct_chart_admit,
+  alladmits_byweek = alladmits_byweek,
+  diags_chart = diags_chart,
+  chart_counts = chart_counts
+)
+site_chartresults <- paste0(currSiteId, "_chartresults")
+assign(site_chartresults, chartresults)
+save(list = site_chartresults, file = file.path(out_dir, paste0(currSiteId, "_chartresults.rda")))
+
+```
+
+```{r stuffwedontneed}
+# Tabbe of all patients without U07.1
+#chart_raw %>% filter(!patient_num %in% (chart_raw %>% left_join(obs_raw,by="patient_num") %>% filter(concept_code=="U07.1") %>% select(patient_num) %>% distinct_all())$patient_num)
+
+# Distribution of chart review labels
+# 0 = not covid, 1 = COVID, 2 = maybe COVID
+#chart.results <- chart_raw %>% group_by(admitted_for_covid) %>% summarise(ct=n(),tot=nrow(chart_raw),pct=n()/nrow(chart_raw))
+
+# chart_raw  %>% group_by(admitted_for_covid) %>% mutate(GroupTotal=scales::percent(n()/nrow(chart_raw))) %>% mutate(COVIDStatus=case_when(admitted_for_covid==0 ~ 'Not COVID', admitted_for_covid==1 ~ "COVID",admitted_for_covid==2 ~ "Possibly COVID")) %>% right_join(criteria,by=c("chart_code" = 'category')) %>%group_by(COVIDStatus,chart_code) %>% summarise(GroupTotal = GroupTotal,Category=description,count=n(),total=nrow(chart_raw),percent=scales::percent(n()/nrow(chart_raw)),.groups="drop") %>% distinct_all()
+
+# Distribution of chart review codes by label
+# dist.bylabel = chart_raw  %>% group_by(admitted_for_covid) %>% mutate(GroupTotal=scales::percent(n()/nrow(chart_raw))) %>% mutate(COVIDStatus=case_when(admitted_for_covid==0 ~ 'Not COVID', admitted_for_covid==1 ~ "COVID",admitted_for_covid==2 ~ "Possibly COVID")) %>% right_join(criteria,by=c("chart_code" = 'category')) %>%group_by(COVIDStatus,chart_code) %>% summarise(GroupTotal = GroupTotal,Category=description,count=n(),total=nrow(chart_raw),percent=scales::percent(n()/nrow(chart_raw)),.groups="drop") %>% distinct_all()
+```
