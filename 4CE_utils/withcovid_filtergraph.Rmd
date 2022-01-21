@@ -1,0 +1,365 @@
+---
+title: "Visualize COVID-hospitalization filter, with chart-reviewed patients"
+output:
+  html_document:
+    df_print: paged
+editor_options: 
+  chunk_output_type: inline
+---
+
+
+editor_options:
+  chunk_output_type: console
+
+
+Written by Jeffrey Klann, PhD
+With refactoring by Trang Le
+Last major update 10/7/21
+Streamlining 1/21/22
+
+This notebook will calculate the number of COVID hospitalizations by day and week when excluding patients who had a specified filter. 
+
+It includes the ability to visualize chart-reviewed patients on the graph, loaded in an optional file called LocalPatientAdmissionChartReview.csv with three columns: a patient_num, an admitted_for_covid flag (0 for False, 1 for True, or 2 for Maybe), and optionally a severe_covid flag (0 for False, 1 for True). These flags are intended to be the result of a chart review.
+
+Also it is now very easy to configure the filter used by altering fource_filter below.
+
+To run this:
+1) Install the directlabels package if needed - install.packages("directlabels")
+2) Create the LocalPatientAdmissionChartReview.csv file if you would like to plot chart-reviewed points - see the comments 
+3) Set your threshold and blur and site ID.
+4) Configure your data directory below if it is not the one specified in the 4CE package (for example, if using 2.2 data - which works fine with this script but you will need to uncomment the marked lines if you are using a file with multiple cohorts)
+5) Configure your output directory too.
+6) Run the code (knit, or run all chunks)
+7) Zip up and send all the *filtergraph.rda files in the output directory.
+
+```{r setup}
+library(tidyverse)
+library(lubridate)
+library(grid)
+library(glue)
+library(directlabels)
+
+# This clears the global environment! Don't run this line if you need to keep your other variables around!
+#rm(list=ls())
+fake_chart_review <- FALSE
+
+# Please set these parameters!
+#data_dir <- FourCePhase2.1Data::getInputDataDirectoryName()
+data_dir <- '~/4ceData_x2/4ceData_x2/102121/'
+out_dir <- "~/4ceData_x2/output/other_sites"
+#currSiteId <- FourCePhase2.1Data::getSiteId()
+currSiteId <- "MGB"
+threshold <- 3
+blur <- 3
+
+```
+
+```{r load}
+CurrSiteId <- toupper(currSiteId)
+# Load the data
+clin_raw <-
+  readr::read_csv(
+    file.path(data_dir, "LocalPatientClinicalCourse.csv"),
+    col_types = list(patient_num = readr::col_character())
+  )  %>% filter (str_detect(cohort,"^PosAdm")) #- UNCOMMENT FOR 2.2
+obs_raw <-
+  readr::read_csv(
+    file.path(data_dir, "LocalPatientObservations.csv"),
+    col_types = list(patient_num = readr::col_character())
+  )  %>% filter (str_detect(cohort,"^PosAdm")) #- UNCOMMENT FOR 2.2
+demo_raw <-
+  readr::read_csv(
+    file.path(data_dir, "LocalPatientSummary.csv"),
+    col_types = list(patient_num = readr::col_character()),
+    na = c("1900-01-01", "1/1/1900")
+  )  %>%  filter (str_detect(cohort,"^PosAdm")) %>% #- UNCOMMENT FOR 2.2
+  # Fix for datetimes (Oracle code?)
+  mutate(admission_date = as_date(admission_date))
+
+# Optional - 
+# Load table with chart review flag data
+# This script must have at least three columns: 
+#    patient_num : the patient_num from the 2.1 study cohort, not necessarily i2b2
+#    admitted_for_covid : chart-reviewed admission flag, 1 if chart-reviewed as admitted for COVID, 0 if chart-reviewed as not admitted for COVID, and 2 for maybe.
+#    severe_covid : chart-reviewed severity flag, 1 if chart-reviewed severe illness, 0 if chart-reviewed non-severe illness, NULL otherwise
+
+if (fake_chart_review) { # fake number
+  chart_raw <- tibble(
+    patient_num = demo_raw[1:50,c('patient_num')], # as.character(1:50),
+    admitted_for_covid = c(rep(TRUE, 40), rep(FALSE, 10))
+  )
+  
+} else {
+  chart_raw <- tibble(patient_num = "x", admitted_for_covid = NA)
+  if (file.exists(file.path(data_dir, "LocalPatientAdmissionChartReview.csv"))) {
+    chart_raw <-
+      readr::read_csv(
+        file.path(data_dir, "LocalPatientAdmissionChartReview.csv"),
+        col_types = list(patient_num = readr::col_character())
+      )
+  }
+}
+```
+
+Now run the graphing script multiple times, once for each rule! Then zip up and send everything in [outdir]/*_filtergraph.rda.
+```{r}
+# THIS IS TO RECONSTITUTE GRAPHS FROM THE RDA
+# # LABS
+# #>3 sites (0.76, 0.85 at MGB): Ferritin AND CRP
+# fource_filter <- c("1988-5","2276-4")
+# rulename <- "toplab"
+# fource_filter_AND = TRUE 
+# max_days_in_hospital = 2 
+# andsize = NA 
+# source("withcovid_filtergraph_script.R")
+# plot_donut(blurred_pts_byweek, "Obfuscated")
+# plot_rug(blurred_pts_byweek, "Obfuscated")
+# 
+# # LABS - Best for MGB
+# #Best MGB: (0.72,0.92 at MGB)  <- CRP, Ferritin, LDH, troponin 
+# fource_filter <- c("1988-5","2276-4","2532-0","6598-7")
+# rulename <- "toplabmgb"
+# fource_filter_AND = TRUE # Make this an OR filter
+# max_days_in_hospital = 2 # Number of hospital days to look at
+# andsize = NA #In AND filters, make "any N" instead of ALL
+# source("withcovid_filtergraph_script.R")
+# plot_donut(blurred_pts_byweek, "Obfuscated")
+# plot_rug(blurred_pts_byweek, "Obfuscated")
+# 
+# # LABS - Best for BI
+# #ANY 3- CRP, Ferritin, LDH, troponin 
+# fource_filter <- c("1988-5","2276-4","2532-0","6598-7")
+# rulename <- "toplabbi"
+# fource_filter_AND = TRUE # Make this an OR filter
+# max_days_in_hospital = 2 # Number of hospital days to look at
+# andsize = 3 #In AND filters, make "any N" instead of ALL
+# source("withcovid_filtergraph_script.R")
+# plot_donut(blurred_pts_byweek, "Obfuscated")
+# plot_rug(blurred_pts_byweek, "Obfuscated")
+# 
+# # LABS - Best for PITT
+# #OR: CRP, Ferritin, D-dimer 
+# fource_filter <- c("1988-5","2276-4","48065-7")
+# rulename <- "toplabpitt"
+# fource_filter_AND = FALSE # Make this an OR filter
+# max_days_in_hospital = 2 # Number of hospital days to look at
+# andsize = NA #In AND filters, make "any N" instead of ALL
+# source("withcovid_filtergraph_script.R")
+# plot_donut(blurred_pts_byweek, "Obfuscated")
+# plot_rug(blurred_pts_byweek, "Obfuscated")
+# 
+# # LABS - Best for NWU
+# #OR: Ferritin, LDH, troponin
+# fource_filter <- c("2276-4","2532-0","49563-0")
+# rulename <- "toplabnwu"
+# fource_filter_AND = FALSE # Make this an OR filter
+# max_days_in_hospital = 2 # Number of hospital days to look at
+# andsize = NA #In AND filters, make "any N" instead of ALL
+# source("withcovid_filtergraph_script.R")
+# plot_donut(blurred_pts_byweek, "Obfuscated")
+# plot_rug(blurred_pts_byweek, "Obfuscated")
+# 
+# # Top diagnoses at >2 sites
+# fource_filter <- c("J12.89","J96.01") 
+# rulename <- "topdx2"
+# fource_filter_AND = FALSE # Make this an OR filter
+# andsize = NA #In AND filters, make "any N" instead of ALL
+# max_days_in_hospital = 2 # Number of hospital days to look at
+# source("withcovid_filtergraph_script.R")
+# plot_donut(blurred_pts_byweek, "Obfuscated")
+# plot_rug(blurred_pts_byweek, "Obfuscated")
+# 
+# # Top diagnoses at >1 sites
+# fource_filter <- c("J12.89","J96.01","R06.02","R91.8") 
+# rulename <- "topdx1"
+# fource_filter_AND = FALSE # Make this an OR filter
+# andsize = NA #In AND filters, make "any N" instead of ALL
+# max_days_in_hospital = 2 # Number of hospital days to look at
+# source("withcovid_filtergraph_script.R")
+# plot_donut(blurred_pts_byweek, "Obfuscated")
+# plot_rug(blurred_pts_byweek, "Obfuscated")
+# 
+# # Top other found in our paper 
+# fource_filter <- c("J12.89","REMDESIVIR","SupplementalOxygenSevere") # MGB: (0.74,0.91;PPV: 96.8)
+# rulename <- "topall"
+# fource_filter_AND = FALSE # Make this an OR filter
+# andsize = NA #In AND filters, make "any N" instead of ALL
+# max_days_in_hospital = 2 # Number of hospital days to look at
+# source("withcovid_filtergraph_script.R")
+# plot_donut(blurred_pts_byweek, "Obfuscated")
+# plot_rug(blurred_pts_byweek, "Obfuscated")
+# 
+# # Top other found in our paper with labs
+# fource_filter <- c("1988-5","2276-4","J12.89","REMDESIVIR","SupplementalOxygenSevere")
+# rulename <- "topall2"
+# fource_filter_AND = TRUE # Make this an OR filter
+# andsize = 2 #In AND filters, make "any N" instead of ALL
+# max_days_in_hospital = 2 # Number of hospital days to look at
+# source("withcovid_filtergraph_script.R")
+# plot_donut(blurred_pts_byweek, "Obfuscated")
+# plot_rug(blurred_pts_byweek, "Obfuscated")
+# 
+# # Trying to get between-wave things.
+# fource_filter <- c("J12.82","J12.89","REMDESIVIR","SupplementalOxygenSevere") # MGB: .76/0.88 (PPV: 97.1)
+# rulename <- "topslump"
+# fource_filter_AND = FALSE # Make this an OR filter
+# andsize = NA #In AND filters, make "any N" instead of ALL
+# max_days_in_hospital = 2 # Number of hospital days to look at
+# source("withcovid_filtergraph_script.R")
+# plot_donut(blurred_pts_byweek, "Obfuscated")
+# plot_rug(blurred_pts_byweek, "Obfuscated")
+
+
+```
+```{r}
+rm(list=ls())
+
+plot_trend <- function(df, cap = "") {
+  df %>%
+    ggplot(aes(y = n_week, x = week_name)) +
+    geom_line(aes(alpha = label, linetype = label)) +
+    theme_classic() +
+    scale_linetype_manual(values = c(3, 2, 1)) +
+    scale_alpha_discrete(range = c(0.5, 1)) +
+    scale_color_brewer(palette = "Dark2", direction = -1) +
+    guides(linetype = FALSE, alpha = FALSE) +
+    scale_x_date(expand = expansion(c(0, 0), c(10, 90))) +
+    ggtitle(paste("Patients removed by non-COVID-admission filter\n ")) +
+    labs(
+      color = NULL, size = "Chart reviewed",
+      y = "Number of admissions by week", x = NULL,
+      caption = glue("Site: {currSiteId}, ANDed? {fource_filter_AND}
+                     Filter: {paste(fource_filter, collapse = ',')}
+                     {cap}")
+    ) +
+    directlabels::geom_dl(aes(label = label),
+                          method = list(directlabels::dl.trans(x = x + .2), "last.bumpup")
+    ) +
+    theme(legend.position = "bottom") +
+    geom_text(data = annotate_df, aes(x = x, y = y, label = label))
+}
+
+plot_rug <- function(df, cap = "") {
+  df %>%
+    plot_trend(cap) +
+    geom_rug(
+      data = rug_df,
+      aes(x = week_name, y = NA_real_, color = name, linetype = label),
+      position = "jitter"
+    )
+}
+
+plot_donut <- function(df, cap = "") {
+  df %>%
+    plot_trend(cap) +
+    geom_point(
+      data = point_df %>% filter(value > 0),
+      aes(y = n_week, x = week_name, size = value, color = name),
+      alpha = 0.8, shape = 21, stroke = 2
+    ) 
+}
+
+# Load a saved rda here...
+mydf <- MGB_toplab_results
+blurred_pts_byweek = mydf[['pts_byweek']]
+  annotate_df = mydf[['annotate_df']]
+  rug_df= mydf[['rug_df']]
+  point_df = mydf[['point_df']]
+  summary_stats = mydf[['summary_stats']]
+  pct_alltime = mydf[['pct_alltime']]
+  currSiteId = mydf[['currSiteId']]
+  fource_filter = mydf[['fource_filter']]
+  fource_filter_AND = mydf[['fource_filter_AND']]
+  fource_filter_AND_size = mydf[['fource_filter_AND_size']]
+  rulename = mydf[['rulename']]
+plot_donut(blurred_pts_byweek, "Obfuscated")
+plot_rug(blurred_pts_byweek, "Obfuscated")
+```
+
+```{r}
+
+# Also configurable: what filter will we use to do our analysis?
+
+# Original filter (from temporal trend paper)
+# LDH, PaO2, PaCO2, -OR- procalcitonin
+#fource_filter <- c("33959-8", "2532-0", "2019-8", "2703-7")
+
+# High performing from data mining
+# CRP, LDH, -AND- Cardiac Troponin
+#fource_filter <- c("1988-5","2532-0","6598-7","751-8")
+#fource_filter_AND = TRUE # Make this an AND filter
+#max_days_in_hospital = 2 # Number of hospital days to look at
+
+# Procalcitonin, CRP, D-Dimer, Ferritin, LDH
+#fource_filter <- c("33959-8", "1988-5", "48066-5", "2276-4", "2532-0")
+# fource_filter <- c('48065-7') # ddimer FEU
+
+# Top diagnoses found in our paper - dx in OR lists at >1 site
+# fource_filter <- c("J12.89","J96.01") #,"R06.02","R91.8") # .73/.79 at MGB with top 3, .79/.72 with top 4, 0.7/0.94 with top 2
+# # Every diagnosis
+# #fource_filter <- c("J12.89","J96.01","R06.02","D64.9","R91.8","R09.02","B97.29","U07.1")
+# rulename <- "topdx"
+# fource_filter_AND = FALSE # Make this an OR filter
+# andsize = NA #In AND filters, make "any N" instead of ALL
+# max_days_in_hospital = 2 # Number of hospital days to look at
+
+# # Top labs found in our paper - >2 sites
+# #>2 sites: fource_filter <- c("1988-5","2276-4","R06.02","2532-0","49563-0","6598-7","48065-7","48066-5")
+# #>3 sites (0.76, 0.85 at MGB): Ferritin AND CRP: fource_filter <- c("1988-5","2276-4") #,"2532-0","49563-0","6598-7","48065-7","48066-5")
+# #Best MGB: (0.72,0.92 at MGB)  <- CRP, Ferritin, LDH, troponin - fource_filter <- c("1988-5","2276-4","2532-0","6598-7")
+# rulename <- "toplab"
+# fource_filter_AND = TRUE # Make this an OR filter
+# max_days_in_hospital = 2 # Number of hospital days to look at
+# andsize = NA #In AND filters, make "any N" instead of ALL
+# 
+# Top other found in our paper - >2 sites
+#>2 sites: fource_filter <- c("1988-5","2276-4","R06.02","2532-0","49563-0","6598-7","48065-7","48066-5")
+#>3 sites (0.76, 0.85 at MGB): fource_filter <- c("1988-5","2276-4") #,"2532-0","49563-0","6598-7","48065-7","48066-5")
+#fource_filter <- c("1988-5","2276-4","J12.89","REMDESIVIR","SupplementalOxygenSevere")
+# (0.74,0.91 MGB) fource_filter <- c("J12.89","REMDESIVIR","SupplementalOxygenSevere")
+# fource_filter <- c("J12.89","REMDESIVIR","SupplementalOxygenSevere") # MGB: (0.74,0.91;PPV: 96.8)
+# rulename <- "topallMGB"
+# fource_filter_AND = FALSE # Make this an OR filter
+# andsize = NA #In AND filters, make "any N" instead of ALL
+# max_days_in_hospital = 2 # Number of hospital days to look at
+# 
+# # Top other found in our paper - >2 sites
+# #>2 sites: fource_filter <- c("1988-5","2276-4","R06.02","2532-0","49563-0","6598-7","48065-7","48066-5")
+# #>3 sites (0.76, 0.85 at MGB): fource_filter <- c("1988-5","2276-4") #,"2532-0","49563-0","6598-7","48065-7","48066-5")
+# #fource_filter <- c("1988-5","2276-4","J12.89","REMDESIVIR","SupplementalOxygenSevere")
+# fource_filter <- c("1988-5","2276-4","2532-0","J12.89","REMDESIVIR","SupplementalOxygenSevere")
+# rulename <- "topallMGB"
+# fource_filter_AND = TRUE # Make this an OR filter
+# andsize = 2 #In AND filters, make "any N" instead of ALL
+# max_days_in_hospital = 2 # Number of hospital days to look at
+
+# # Trying to get between-wave things.
+# #>2 sites: fource_filter <- c("1988-5","2276-4","R06.02","2532-0","49563-0","6598-7","48065-7","48066-5")
+# #>3 sites (0.76, 0.85 at MGB): fource_filter <- c("1988-5","2276-4") #,"2532-0","49563-0","6598-7","48065-7","48066-5")
+# #fource_filter <- c("1988-5","2276-4","J12.89","REMDESIVIR","SupplementalOxygenSevere")
+# fource_filter <- c("J12.82","J12.89","REMDESIVIR","SupplementalOxygenSevere") # MGB: .76/0.88 (PPV: 97.1)
+# rulename <- "bestslump"
+# fource_filter_AND = FALSE # Make this an OR filter
+# andsize = NA #In AND filters, make "any N" instead of ALL
+# max_days_in_hospital = 2 # Number of hospital days to look at
+
+```
+
+Lines:
+All hospitalizations includes only the hospitalizations in the COVID cohort, so all hospitalizations involve a COVID-positive test. Kept patients are those selected by the filter, and Removed patients are those excluded by the filter.
+
+Dots:
+Green dots on the solid line are true positives – patients who were selected by the filter and were chart reviewed as admitted for covid. 
+Green dots on the dashed line are true negatives – patients who were not selected by the filter and were chart reviewed as not admitted for covid. 
+Orange dots on the solid line are false positives - patients who were selected but the filter but chart reviewed as not admitted for COVID. 
+Orange dots on the dashed line are false negatives - patients that were not selected by the filter but are chart reviewed as admitted for COVID.
+
+The rug plot substitutes lines below the graph for the dots.
+ 
+
+This shows the percentage of total patients seen each week that are excluded by the filter. Perhaps this is most informative, because (at MGB at least) it increases after the first wave of COVID (when hospitals were opening back up) even though the absolute number of COVID-positive hospitalizations went down.
+
+
+
+
+
