@@ -169,30 +169,35 @@ annotate_df <- tibble(
 # # Visualize
 # # Reference I used for point shapes: http://www.sthda.com/english/wiki/ggplot2-point-shapes
 # # And colors: http://sape.inf.usi.ch/quick-reference/ggplot2/colour
+# And linetypes: http://sape.inf.usi.ch/quick-reference/ggplot2/linetype
 
 plot_trend <- function(df, cap = "") {
+  fltext <- case_when((fource_filter_AND==TRUE & andsize < length(fource_filter)) ~ glue("ANY {andsize} of {paste(fource_filter, collapse = ',')}"),
+                      (fource_filter_AND==TRUE & andsize == length(fource_filter)) ~ glue("ALL of {paste(fource_filter, collapse = ',')}"),
+                      (fource_filter_AND==FALSE) ~ glue("ANY of {paste(fource_filter, collapse = ',')}"))                                                  
   df %>%
     ggplot(aes(y = n_week, x = week_name)) +
     geom_line(aes(alpha = label, linetype = label)) +
     theme_classic() +
-    scale_linetype_manual(values = c(3, 2, 1)) +
-    scale_alpha_discrete(range = c(0.5, 1)) +
+    scale_linetype_manual(values = c("solid","dotted","longdash")) +
+    #scale_color_manual(values=c("grey44","black","black")) + 
+    scale_alpha_discrete(range = c(1, 0.75,0.5)) +
     scale_color_brewer(palette = "Dark2", direction = -1) +
     guides(linetype = FALSE, alpha = FALSE) +
     scale_x_date(expand = expansion(c(0, 0), c(10, 90))) +
-    ggtitle(paste("Patients removed by non-COVID-admission filter\n ")) +
+    #ggtitle(paste("Patients removed by With-COVID detection filter\n ")) +
     labs(
       color = NULL, size = "Chart reviewed",
       y = "Number of admissions by week", x = NULL,
-      caption = glue("Site: {currSiteId}, ANDed? {fource_filter_AND}
-                     Filter: {paste(fource_filter, collapse = ',')}
+      caption = glue("Site: {currSiteId}
+                     Filter rule: {fltext}
                      {cap}")
     ) +
     directlabels::geom_dl(aes(label = label),
-                          method = list(directlabels::dl.trans(x = x + .2), "last.bumpup")
+                          method = list(directlabels::dl.trans(x = x + .2), method=list("top.points",hjust=0.5,cex=0.75))#"top.bumpup")#"last.bumpup")
     ) +
     theme(legend.position = "bottom") +
-    geom_text(data = annotate_df, aes(x = x, y = y, label = label))
+    geom_text(data = annotate_df, aes(x = x + 100, y = y + 100, label = label))
 }
 
 plot_rug <- function(df, cap = "") {
